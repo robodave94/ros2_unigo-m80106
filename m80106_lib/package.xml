@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>m80106_lib</name>
+  <version>0.2.0</version>
+  <description>
+    Header-only library for Unitree GO-M8010-6 motor control over RS-485.
+
+    Bundles the Unitree SDK shared object (libUnitreeMotorSDK_M80106_*.so) for
+    x86_64 and aarch64.  No external SDK download is required — the package is
+    fully self-contained.
+
+    Provides four user-facing headers under m80106_lib/:
+      motor_types.hpp    — constants, enums, unit-conversion helpers
+      motor_bus.hpp      — RS-485 adapter discovery by USB PID:VID
+      motor_driver.hpp   — typed SerialPort wrapper + scanMotors()
+      control_modes.hpp  — scalable control-mode abstraction (PD, PI,
+                           impedance, direct torque, CRTP extension base)
+  </description>
+
+  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- serial-ros2: provides list_ports / findSerialDevicePathByPIDVID used
+       in motor_bus.hpp, and is a link-time dependency for executables.  
+       uses the fork version https://github.com/robodave94/serial-ros2  -->
+  <depend>serial</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
