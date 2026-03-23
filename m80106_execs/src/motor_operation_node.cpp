@@ -305,60 +305,60 @@ int main(int argc, char * argv[])
     //
     // SDK approach: K_P=stiffness, K_W=damping, Pos=target_rotor_pos, W=0, T=0
     // ─────────────────────────────────────────────────────────────────────
-    RCLCPP_INFO(node->get_logger(),
-                "[3/5] POSITION MODE");
-    {
-        // Refresh current position after the velocity phase
-        brakeFor(driver, id, 100, fb);
-        const float cur_rotor = fb.correct ? fb.Pos : start_pos_rotor;
+    // RCLCPP_INFO(node->get_logger(),
+    //             "[3/5] POSITION MODE");
+    // {
+    //     // Refresh current position after the velocity phase
+    //     brakeFor(driver, id, 100, fb);
+    //     const float cur_rotor = fb.correct ? fb.Pos : start_pos_rotor;
 
-        // Kp output-side = 20 → rotor-side = 20 / r²
-        const float K_P = m80106::toRotorKp(20.0f);
-        // Kd output-side = 1.0 → rotor-side = 1.0 / r²
-        const float K_W = m80106::toRotorKd(1.0f);
+    //     // Kp output-side = 20 → rotor-side = 20 / r²
+    //     const float K_P = m80106::toRotorKp(20.0f);
+    //     // Kd output-side = 1.0 → rotor-side = 1.0 / r²
+    //     const float K_W = m80106::toRotorKd(1.0f);
 
-        const float target_plus  = cur_rotor + m80106::toRotorPos(0.5f);
-        const float target_minus = cur_rotor - m80106::toRotorPos(0.5f);
+    //     const float target_plus  = cur_rotor + m80106::toRotorPos(0.5f);
+    //     const float target_minus = cur_rotor - m80106::toRotorPos(0.5f);
 
-        RCLCPP_INFO(node->get_logger(),
-                    "  Moving to +0.5 rad (output), hold 4 s ...");
-        auto cmd_plus = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f,
-            /*Pos=*/target_plus,
-            /*K_P=*/K_P, /*K_W=*/K_W);
-        runFor(driver, cmd_plus, 4000, fb);
-        logState(node->get_logger(), fb);
-        checkError(node->get_logger(), fb);
+    //     RCLCPP_INFO(node->get_logger(),
+    //                 "  Moving to +0.5 rad (output), hold 4 s ...");
+    //     auto cmd_plus = makeFOCCmd(id,
+    //         /*T=*/0.0f, /*W=*/0.0f,
+    //         /*Pos=*/target_plus,
+    //         /*K_P=*/K_P, /*K_W=*/K_W);
+    //     runFor(driver, cmd_plus, 4000, fb);
+    //     logState(node->get_logger(), fb);
+    //     checkError(node->get_logger(), fb);
 
-        // Brief settle before the 1.0 rad step to reduce jerk
-        RCLCPP_INFO(node->get_logger(),
-                    "  Settling at +0.5 rad (300 ms) ...");
-        brakeFor(driver, id, 300, fb);
+    //     // Brief settle before the 1.0 rad step to reduce jerk
+    //     RCLCPP_INFO(node->get_logger(),
+    //                 "  Settling at +0.5 rad (300 ms) ...");
+    //     brakeFor(driver, id, 300, fb);
 
-        RCLCPP_INFO(node->get_logger(),
-                    "  Moving to -0.5 rad (output), hold 4 s ...");
-        auto cmd_minus = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f,
-            /*Pos=*/target_minus,
-            /*K_P=*/K_P, /*K_W=*/K_W);
-        runFor(driver, cmd_minus, 4000, fb);
-        logState(node->get_logger(), fb);
-        checkError(node->get_logger(), fb);
+    //     RCLCPP_INFO(node->get_logger(),
+    //                 "  Moving to -0.5 rad (output), hold 4 s ...");
+    //     auto cmd_minus = makeFOCCmd(id,
+    //         /*T=*/0.0f, /*W=*/0.0f,
+    //         /*Pos=*/target_minus,
+    //         /*K_P=*/K_P, /*K_W=*/K_W);
+    //     runFor(driver, cmd_minus, 4000, fb);
+    //     logState(node->get_logger(), fb);
+    //     checkError(node->get_logger(), fb);
 
-        RCLCPP_INFO(node->get_logger(),
-                    "  Returning to start position, hold 3 s ...");
-        auto cmd_home = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f,
-            /*Pos=*/cur_rotor,
-            /*K_P=*/K_P, /*K_W=*/K_W);
-        runFor(driver, cmd_home, 3000, fb);
-        logState(node->get_logger(), fb);
-        checkError(node->get_logger(), fb);
-    }
+    //     RCLCPP_INFO(node->get_logger(),
+    //                 "  Returning to start position, hold 3 s ...");
+    //     auto cmd_home = makeFOCCmd(id,
+    //         /*T=*/0.0f, /*W=*/0.0f,
+    //         /*Pos=*/cur_rotor,
+    //         /*K_P=*/K_P, /*K_W=*/K_W);
+    //     runFor(driver, cmd_home, 3000, fb);
+    //     logState(node->get_logger(), fb);
+    //     checkError(node->get_logger(), fb);
+    // }
 
-    // Settle
-    RCLCPP_INFO(node->get_logger(), "  Braking to rest (1 s) ...");
-    brakeFor(driver, id, 1000, fb);
+    // // Settle
+    // RCLCPP_INFO(node->get_logger(), "  Braking to rest (1 s) ...");
+    // brakeFor(driver, id, 1000, fb);
 
     // ─────────────────────────────────────────────────────────────────────
     // [4/5] TORQUE – direct torque with baseline damping
