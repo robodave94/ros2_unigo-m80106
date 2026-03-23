@@ -38,13 +38,13 @@
  *     RX: motor re-boots with new ID and responds to the next brake command.
  *
  * Usage:
- *   ros2 run m80106_bringup m80106_change_id \
+ *   ros2 run m80106_execs m80106_change_id \
  *       --ros-args -p target_id:=0 -p new_id:=3
- *   ros2 run m80106_bringup m80106_change_id \
+ *   ros2 run m80106_execs m80106_change_id \
  *       --ros-args -p pidvid:=0403:6011 -p target_id:=2 -p new_id:=5
  *
  * Debug / troubleshooting:
- *   ros2 run m80106_bringup m80106_change_id \
+ *   ros2 run m80106_execs m80106_change_id \
  *       --ros-args -p target_id:=0 -p new_id:=3 -p debug:=true -p reboot_wait_ms:=3000
  *
  *   debug=true logs:
@@ -68,6 +68,8 @@
 
 #include "m80106_lib/motor_driver.hpp"
 #include "m80106_lib/motor_types.hpp"
+
+#include "m80106_execs/multi_serial_go8_scanner.hpp"
 
 #include "crc/crc_ccitt.h"
 
@@ -168,7 +170,7 @@ std::vector<uint8_t> tryChangeMotorId(m80106::MotorDriver & driver,
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace m80106_bringup {
+namespace m80106_execs {
 
 class ChangeIdNode : public rclcpp::Node
 {
@@ -207,52 +209,74 @@ public:
                     "Searching for serial ports matching PID:VID '%s' ...",
                     pidvid.c_str());
 
-        std::vector<std::string> ports;
-        try {
-            ports = serial::findSerialMultipleSerialDevicePathsByPIDVID(pidvid);
-        } catch (const std::runtime_error & e) {
-            RCLCPP_ERROR(get_logger(), "No ports found for PID:VID '%s': %s",
-                         pidvid.c_str(), e.what());
+        const auto scan = m80106_execs::scanAllPorts(pidvid);
+
+        if (scan.ports.empty()) {
+            RCLCPP_ERROR(get_logger(), "No ports found for PID:VID '%s'.",
+                         pidvid.c_str());
             return;
         }
 
         RCLCPP_INFO(get_logger(), "Found %zu port(s) matching '%s'.",
-                    ports.size(), pidvid.c_str());
+                    scan.ports.size(), pidvid.c_str());
 
-        // ── Scan each port ────────────────────────────────────────────────
-        std::map<std::string, std::vector<uint8_t>> results;
-        for (const std::string & port : ports) {
-            results[port] = scanPort(port);
+        // ── Per-port detail ───────────────────────────────────────────────
+        for (const auto & ps : scan.ports) {
+            RCLCPP_INFO(get_logger(),
+                        "─────────────────────────────────────────────────────");
+            RCLCPP_INFO(get_logger(), "Port      : %s", ps.port.c_str());
+            RCLCPP_INFO(get_logger(), "Hardware  : %s", ps.hardware_id.c_str());
+            RCLCPP_INFO(get_logger(), "Scanning actuators (IDs 0–%d) ...",
+                        static_cast<int>(m80106::MAX_MOTOR_ID));
+
+            if (ps.motor_ids.empty()) {
+                RCLCPP_WARN(get_logger(),
+                            "No Unitree actuators responded on %s.", ps.port.c_str());
+            } else {
+                RCLCPP_INFO(get_logger(),
+                            "%zu actuator(s) confirmed on %s:",
+                            ps.motor_ids.size(), ps.port.c_str());
+                for (uint8_t id : ps.motor_ids) {
+                    RCLCPP_INFO(get_logger(),
+                                "  [PRESENT] Actuator ID %d on %s", id, ps.port.c_str());
+                }
+            }
         }
 
         // ── Summary (mirrors actuator_ping output) ────────────────────────
         RCLCPP_INFO(get_logger(),
                     "═════════════════════════════════════════════════════");
-        RCLCPP_INFO(get_logger(), "SUMMARY  (%zu port(s) scanned)", ports.size());
+        RCLCPP_INFO(get_logger(), "SUMMARY  (%zu port(s) scanned)", scan.ports.size());
         RCLCPP_INFO(get_logger(),
                     "═════════════════════════════════════════════════════");
 
-        size_t total_motors = 0;
-        for (const std::string & port : ports) {
-            const auto & ids = results[port];
-            total_motors += ids.size();
-            if (ids.empty()) {
-                RCLCPP_INFO(get_logger(), "  %-20s  → no actuators", port.c_str());
+        for (const auto & ps : scan.ports) {
+            if (ps.motor_ids.empty()) {
+                RCLCPP_INFO(get_logger(), "  %-20s  → no actuators", ps.port.c_str());
             } else {
                 std::string id_list;
-                for (uint8_t id : ids) {
+                for (uint8_t id : ps.motor_ids) {
                     if (!id_list.empty()) id_list += ", ";
                     id_list += std::to_string(static_cast<int>(id));
                 }
                 RCLCPP_INFO(get_logger(), "  %-20s  → %zu actuator(s): [%s]",
-                            port.c_str(), ids.size(), id_list.c_str());
+                            ps.port.c_str(), ps.motor_ids.size(), id_list.c_str());
             }
         }
         RCLCPP_INFO(get_logger(),
                     "─────────────────────────────────────────────────────");
         RCLCPP_INFO(get_logger(),
                     "Total: %zu actuator(s) across %zu port(s).",
-                    total_motors, ports.size());
+                    scan.totalMotors(), scan.ports.size());
+
+        // ── Build lookup maps from scan results ───────────────────────────
+        // results: port -> motor_ids  (for compatibility with existing checks)
+        std::map<std::string, std::vector<uint8_t>> results;
+        std::vector<std::string> ports;
+        for (const auto & ps : scan.ports) {
+            ports.push_back(ps.port);
+            results[ps.port] = ps.motor_ids;
+        }
 
         // ── Post-summary safety checks ────────────────────────────────────
 
@@ -400,59 +424,16 @@ public:
         }
     }
 
-private:
-    std::vector<uint8_t> scanPort(const std::string & port)
-    {
-        std::string hw_id = "n/a";
-        for (const serial::PortInfo & info : serial::list_ports()) {
-            if (info.port == port) {
-                hw_id = info.hardware_id;
-                break;
-            }
-        }
-
-        RCLCPP_INFO(get_logger(),
-                    "─────────────────────────────────────────────────────");
-        RCLCPP_INFO(get_logger(), "Port      : %s", port.c_str());
-        RCLCPP_INFO(get_logger(), "Hardware  : %s", hw_id.c_str());
-        RCLCPP_INFO(get_logger(), "Scanning actuators (IDs 0–%d) ...",
-                    static_cast<int>(m80106::MAX_MOTOR_ID));
-
-        std::vector<uint8_t> found;
-        try {
-            m80106::MotorDriver driver(port);
-            found = driver.scanMotors();
-        } catch (const std::exception & e) {
-            RCLCPP_ERROR(get_logger(),
-                         "Failed to open %s: %s  (check dialout group membership)",
-                         port.c_str(), e.what());
-            return found;
-        }
-
-        if (found.empty()) {
-            RCLCPP_WARN(get_logger(),
-                        "No Unitree actuators responded on %s.", port.c_str());
-        } else {
-            RCLCPP_INFO(get_logger(),
-                        "%zu actuator(s) confirmed on %s:",
-                        found.size(), port.c_str());
-            for (uint8_t id : found) {
-                RCLCPP_INFO(get_logger(),
-                            "  [PRESENT] Actuator ID %d on %s", id, port.c_str());
-            }
-        }
-        return found;
-    }
 };
 
-}  // namespace m80106_bringup
+}  // namespace m80106_execs
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char * argv[])
 {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<m80106_bringup::ChangeIdNode>();
+    auto node = std::make_shared<m80106_execs::ChangeIdNode>();
     rclcpp::spin_some(node);
     rclcpp::shutdown();
     return 0;

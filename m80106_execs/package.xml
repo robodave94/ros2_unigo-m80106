@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>m80106_execs</name>
+  <version>0.4.0</version>
+  <description>
+    CLI executables for the Unitree GO-M8010-6 motor over RS-485.
+
+    Provides the following executables:
+      actuator_ping      — one-shot CLI: discover and ping all actuators.
+      m80106_change_id   — one-shot CLI: change a motor's RS-485 ID.
+      scan_motor_info    — live htop-style terminal monitor for motor telemetry.
+      motor_operation    — preprogrammed motion-verification routine.
+  </description>
+
+  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>m80106_lib</depend>
+  <depend>serial</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

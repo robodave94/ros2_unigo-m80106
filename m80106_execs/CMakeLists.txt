@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.11)
-project(m80106_bringup)
+project(m80106_execs)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -10,44 +10,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp      REQUIRED)
 find_package(m80106_lib  REQUIRED)
 find_package(serial      REQUIRED)
-
-# ─── FTXUI — modern C++ TUI library (fetched at build time) ─────────────────
-# No system package needed; FetchContent downloads and builds FTXUI from source.
-include(FetchContent)
-FetchContent_Declare(ftxui
-    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
-    GIT_TAG        v5.0.0
-    GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE
-)
-set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(ftxui)
-
-# ─── m80106_ui_node ──────────────────────────────────────────────────────────
-add_executable(m80106_ui_node
-    src/m80106_ui_node.cpp
-    src/tui.cpp
-)
-
-target_include_directories(m80106_ui_node
-    PRIVATE
-        include
-)
-
-target_link_libraries(m80106_ui_node
-    m80106_lib::m80106_lib
-    ftxui::component
-    ftxui::dom
-    ftxui::screen
-)
-
-ament_target_dependencies(m80106_ui_node
-    rclcpp
-    serial
-)
-
-target_compile_features(m80106_ui_node PRIVATE cxx_std_17)
 
 # ─── m80106_change_id ────────────────────────────────────────────────────────
 add_executable(m80106_change_id
@@ -91,11 +53,54 @@ ament_target_dependencies(actuator_ping
 
 target_compile_features(actuator_ping PRIVATE cxx_std_17)
 
+# ─── scan_motor_info ─────────────────────────────────────────────────────────
+add_executable(scan_motor_info
+    src/scan_motor_information_node.cpp
+)
+
+target_include_directories(scan_motor_info
+    PRIVATE
+        include
+)
+
+target_link_libraries(scan_motor_info
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(scan_motor_info
+    rclcpp
+    serial
+)
+
+target_compile_features(scan_motor_info PRIVATE cxx_std_17)
+
+# ─── motor_operation ─────────────────────────────────────────────────────────
+add_executable(motor_operation
+    src/motor_operation_node.cpp
+)
+
+target_include_directories(motor_operation
+    PRIVATE
+        include
+)
+
+target_link_libraries(motor_operation
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(motor_operation
+    rclcpp
+    serial
+)
+
+target_compile_features(motor_operation PRIVATE cxx_std_17)
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS
-    m80106_ui_node
     m80106_change_id
     actuator_ping
+    scan_motor_info
+    motor_operation
     DESTINATION lib/${PROJECT_NAME}
 )
 
