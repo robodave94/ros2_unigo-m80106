@@ -1,0 +1,3 @@
+[submodule "m80106_lib/tools"]
+	path = m80106_lib/tools
+	url = https://github.com/unitreerobotics/unitree_actuator_sdk
