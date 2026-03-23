@@ -70,10 +70,32 @@ ament_target_dependencies(m80106_change_id
 
 target_compile_features(m80106_change_id PRIVATE cxx_std_17)
 
+# ─── actuator_ping ───────────────────────────────────────────────────────────
+add_executable(actuator_ping
+    src/actuator_ping_node.cpp
+)
+
+target_include_directories(actuator_ping
+    PRIVATE
+        include
+)
+
+target_link_libraries(actuator_ping
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(actuator_ping
+    rclcpp
+    serial
+)
+
+target_compile_features(actuator_ping PRIVATE cxx_std_17)
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS
     m80106_ui_node
     m80106_change_id
+    actuator_ping
     DESTINATION lib/${PROJECT_NAME}
 )
 

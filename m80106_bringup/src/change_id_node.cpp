@@ -1,42 +1,62 @@
 /**
  * @file change_id_node.cpp
- * @brief One-shot ROS 2 CLI tool to change a GO-M8010-6 motor's RS-485 ID.
+ * @brief One-shot ROS 2 CLI tool that discovers all USB-serial adapters
+ *        matching a given PID:VID, scans every RS-485 bus for Unitree
+ *        GO-M8010-6 actuators, and changes a motor's ID.
  *
  * Node parameters:
- *   pidvid         (string, default "1a86:7523") — USB PID:VID of the adapter.
- *   serial_number  (string, default "")          — Optional USB serial number filter.
- *   port           (string, default "")          — Explicit device path (overrides discovery).
- *   target_id      (int,    required)            — Current motor ID to change (0–14).
- *   new_id         (int,    required)            — Desired new motor ID (0–14).
+ *   pidvid          (string, default "0403:6011") — USB PID:VID to match.
+ *   target_id       (int,    required)            — Current motor ID to change (0–14).
+ *   new_id          (int,    required)            — Desired new motor ID (0–14).
+ *   reboot_wait_ms  (int,    default 1000)         — ms to wait for motor reboot after packet.
+ *   debug           (bool,   default false)        — Print raw packet hex and full rescan detail.
  *
  * Procedure:
- *   1. Connect to the RS-485 adapter (same discovery logic as m80106_ui_node).
- *   2. Scan the bus — verify target_id is present and new_id is absent.
- *   3. Attempt the ID change via tryChangeMotorId().
- *   4. Re-scan to verify the change was applied.
- *   5. Log result and exit.
+ *   1. Call serial::findSerialMultipleSerialDevicePathsByPIDVID(pidvid) to
+ *      obtain every matching serial port path.
+ *   2. For each discovered port, open a MotorDriver and call scanMotors()
+ *      (brake-ping to IDs 0–14).
+ *   3. Print a summary identical to actuator_ping: port path, hardware_id
+ *      and every responding motor ID.
+ *   4. After the summary, perform safety checks (in order):
+ *        • target_id or new_id > 14  → warn and exit.
+ *        • target_id == new_id       → warn and exit.
+ *        • target_id not found       → warn and exit.
+ *        • target_id on >1 port      → warn about duplicates and exit.
+ *        • new_id already occupied   → warn and exit.
+ *   5. Attempt the ID change via tryChangeMotorId() on the single port
+ *      where target_id was discovered; re-scan to verify.
  *
  * NOTE on ID-change support:
- *   The GO-M8010-6 SDK (libUnitreeMotorSDK_M80106_*.so) does not expose a
- *   dedicated changeMotorId() API.  The implementation below uses the raw
- *   serial port to send the vendor-documented "Broadcast + mode=0x10" packet
- *   that instructs all motors with a given ID to adopt a new ID.  If the
- *   firmware does not respond, the function returns false and logs an error.
+ *   The GO-M8010-6 SDK does not expose a dedicated changeMotorId() API.
+ *   This implementation uses the raw serial port to send the vendor-
+ *   documented "Broadcast + mode=0x10" packet.  If the firmware does not
+ *   respond, the function returns false and logs an error.
  *
- *   Raw protocol reference (from vendor RS-485 application note):
+ *   Raw protocol reference (vendor RS-485 application note):
  *     TX: [0xFE 0xEE] [id_byte (4-bit target | 0x70)] [new_id_byte] [CRC16_lo] [CRC16_hi]
  *     RX: motor re-boots with new ID and responds to the next brake command.
- *
- *   If your firmware does not support this, use the vendor's "MotorID_Set"
- *   Windows utility over RS-485 to change the ID offline.
  *
  * Usage:
  *   ros2 run m80106_bringup m80106_change_id \
  *       --ros-args -p target_id:=0 -p new_id:=3
+ *   ros2 run m80106_bringup m80106_change_id \
+ *       --ros-args -p pidvid:=0403:6011 -p target_id:=2 -p new_id:=5
+ *
+ * Debug / troubleshooting:
+ *   ros2 run m80106_bringup m80106_change_id \
+ *       --ros-args -p target_id:=0 -p new_id:=3 -p debug:=true -p reboot_wait_ms:=3000
+ *
+ *   debug=true logs:
+ *     • Raw 6-byte packet in hex with field annotations.
+ *     • Full post-reboot scan results (every motor ID that responded).
+ *   reboot_wait_ms — increase if the motor needs longer to reboot before re-scan.
  */
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -44,13 +64,10 @@
 
 #include "rclcpp/rclcpp.hpp"
 
-#include "m80106_lib/motor_bus.hpp"
+#include "serial/serial.h"
+
 #include "m80106_lib/motor_driver.hpp"
 #include "m80106_lib/motor_types.hpp"
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CRC helper (CRC-16/CCITT-FALSE, matches the SDK's crc_ccitt.h)
-// ─────────────────────────────────────────────────────────────────────────────
 
 #include "crc/crc_ccitt.h"
 
@@ -59,25 +76,27 @@
 namespace {
 
 /**
- * @brief Attempt to change the RS-485 ID of a motor.
+ * @brief Send the RS-485 ID-change packet and wait for motor reboot.
  *
- * Sends a small proprietary 6-byte broadcast packet and waits for the motor
- * to reboot.  Returns true if a motor at @p new_id responds afterwards.
+ * Returns the full post-reboot scanMotors() result so the caller can
+ * print a detailed summary and determine success itself.
+ * Returns an empty vector if the packet could not be sent.
  *
- * The packet is NOT part of the documented SDK API; it relies on internal
- * motor firmware support.  If the motor does not reboot within ~1 second
- * the operation is considered failed.
- *
- * @param driver      Open MotorDriver instance.
- * @param target_id   Current motor ID (0–14).
- * @param new_id      Desired new motor ID (0–14).
- * @param logger      ROS 2 logger for status messages.
- * @return            true if the re-scan confirms new_id is now present.
+ * @param driver          Open MotorDriver instance.
+ * @param target_id       Current motor ID (0–14).
+ * @param new_id          Desired new motor ID (0–14).
+ * @param reboot_wait_ms  Milliseconds to wait before re-scanning.
+ * @param debug           When true, log the raw packet bytes in hex.
+ * @param logger          ROS 2 logger.
+ * @return                IDs found on the bus after the reboot wait.
+ *                        Empty vector signals a send failure.
  */
-bool tryChangeMotorId(m80106::MotorDriver & driver,
-                      uint8_t target_id,
-                      uint8_t new_id,
-                      const rclcpp::Logger & logger)
+std::vector<uint8_t> tryChangeMotorId(m80106::MotorDriver & driver,
+                                       uint8_t target_id,
+                                       uint8_t new_id,
+                                       int reboot_wait_ms,
+                                       bool debug,
+                                       const rclcpp::Logger & logger)
 {
     // Packet layout (6 bytes):
     //   [0]    0xFE  — header byte 0
@@ -85,10 +104,6 @@ bool tryChangeMotorId(m80106::MotorDriver & driver,
     //   [2]    (target_id & 0x0F) | 0x70  — mode field: id nibble + change-ID command (0x7)
     //   [3]    new_id & 0x0F              — new ID payload
     //   [4..5] CRC16 of bytes [0..3] (little-endian)
-    //
-    // NOTE: 0x70 in the upper nibble is a vendor-internal "set ID" mode not
-    // listed in the public SDK.  If your firmware is older this may be unsupported.
-
     uint8_t pkt[6];
     pkt[0] = 0xFE;
     pkt[1] = 0xEE;
@@ -99,174 +114,346 @@ bool tryChangeMotorId(m80106::MotorDriver & driver,
     pkt[4] = static_cast<uint8_t>(crc & 0xFF);
     pkt[5] = static_cast<uint8_t>((crc >> 8) & 0xFF);
 
+    if (debug) {
+        char hex[32];
+        std::snprintf(hex, sizeof(hex),
+            "%02X %02X %02X %02X %02X %02X",
+            pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5]);
+        RCLCPP_INFO(logger,
+            "[DEBUG] ID-change packet (6 bytes): %s", hex);
+        RCLCPP_INFO(logger,
+            "[DEBUG]   byte[2] = 0x%02X  (target_id=%d nibble | 0x70 change-ID mode)",
+            pkt[2], target_id);
+        RCLCPP_INFO(logger,
+            "[DEBUG]   byte[3] = 0x%02X  (new_id=%d)",
+            pkt[3], new_id);
+        RCLCPP_INFO(logger,
+            "[DEBUG]   CRC16   = 0x%04X  (lo=0x%02X hi=0x%02X)",
+            crc, pkt[4], pkt[5]);
+    }
+
     RCLCPP_INFO(logger, "Sending ID-change packet: motor %d → %d", target_id, new_id);
     const std::size_t sent = driver.serialPort().send(pkt, sizeof(pkt));
     if (sent != sizeof(pkt)) {
         RCLCPP_ERROR(logger, "Failed to send ID-change packet (%zu/%zu bytes).",
                      sent, sizeof(pkt));
-        return false;
+        return {};
     }
 
-    // Motor reboots — wait up to 1 second
-    RCLCPP_INFO(logger, "Waiting for motor reboot (~1 s)...");
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    RCLCPP_INFO(logger, "Waiting for motor reboot (%d ms)...", reboot_wait_ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(reboot_wait_ms));
 
-    // Verify: scan for new_id
+    RCLCPP_INFO(logger, "Re-scanning bus...");
     const std::vector<uint8_t> found = driver.scanMotors();
-    for (uint8_t id : found) {
-        if (id == new_id) {
-            return true;
+
+    if (debug) {
+        if (found.empty()) {
+            RCLCPP_INFO(logger, "[DEBUG] Post-reboot scan: no motors responded.");
+        } else {
+            std::string id_list;
+            for (uint8_t id : found) {
+                if (!id_list.empty()) id_list += ", ";
+                id_list += std::to_string(static_cast<int>(id));
+            }
+            RCLCPP_INFO(logger,
+                "[DEBUG] Post-reboot scan: %zu motor(s) responded: [%s]",
+                found.size(), id_list.c_str());
         }
     }
-    return false;
+
+    return found;
 }
 
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-int main(int argc, char * argv[])
+namespace m80106_bringup {
+
+class ChangeIdNode : public rclcpp::Node
 {
-    rclcpp::init(argc, argv);
+public:
+    explicit ChangeIdNode(const rclcpp::NodeOptions & opts = rclcpp::NodeOptions())
+    : rclcpp::Node("m80106_change_id", opts)
+    {
+        declare_parameter<std::string>("pidvid",         "0403:6011");
+        declare_parameter<int>("target_id",    -1);
+        declare_parameter<int>("new_id",       -1);
+        declare_parameter<int>("reboot_wait_ms", 1000);
+        declare_parameter<bool>("debug",        false);
 
-    auto node = rclcpp::Node::make_shared("m80106_change_id");
+        const std::string pidvid          = get_parameter("pidvid").as_string();
+        const int         target_id_i     = get_parameter("target_id").as_int();
+        const int         new_id_i        = get_parameter("new_id").as_int();
+        const int         reboot_wait_ms  = get_parameter("reboot_wait_ms").as_int();
+        const bool        debug           = get_parameter("debug").as_bool();
 
-    node->declare_parameter<std::string>("pidvid",        "1a86:7523");
-    node->declare_parameter<std::string>("serial_number", "");
-    node->declare_parameter<std::string>("port",          "");
-    node->declare_parameter<int>("target_id", -1);
-    node->declare_parameter<int>("new_id",    -1);
+        // ── Require both IDs to be explicitly provided ────────────────────
+        if (target_id_i < 0) {
+            RCLCPP_FATAL(get_logger(),
+                "Parameter 'target_id' is required. "
+                "Use --ros-args -p target_id:=<0-14>");
+            return;
+        }
+        if (new_id_i < 0) {
+            RCLCPP_FATAL(get_logger(),
+                "Parameter 'new_id' is required. "
+                "Use --ros-args -p new_id:=<0-14>");
+            return;
+        }
 
-    const auto pidvid        = node->get_parameter("pidvid").as_string();
-    const auto serial_number = node->get_parameter("serial_number").as_string();
-    const auto explicit_port = node->get_parameter("port").as_string();
-    const int  target_id_i   = node->get_parameter("target_id").as_int();
-    const int  new_id_i      = node->get_parameter("new_id").as_int();
+        // ── Discover all matching ports ───────────────────────────────────
+        RCLCPP_INFO(get_logger(),
+                    "Searching for serial ports matching PID:VID '%s' ...",
+                    pidvid.c_str());
 
-    const auto & log = node->get_logger();
+        std::vector<std::string> ports;
+        try {
+            ports = serial::findSerialMultipleSerialDevicePathsByPIDVID(pidvid);
+        } catch (const std::runtime_error & e) {
+            RCLCPP_ERROR(get_logger(), "No ports found for PID:VID '%s': %s",
+                         pidvid.c_str(), e.what());
+            return;
+        }
 
-    // ── Validate parameters ───────────────────────────────────────────────
-    if (target_id_i < 0 || target_id_i > static_cast<int>(m80106::MAX_MOTOR_ID)) {
-        RCLCPP_FATAL(log,
-            "Parameter 'target_id' must be 0–%d. Got: %d",
-            static_cast<int>(m80106::MAX_MOTOR_ID), target_id_i);
-        rclcpp::shutdown();
-        return 1;
-    }
-    if (new_id_i < 0 || new_id_i > static_cast<int>(m80106::MAX_MOTOR_ID)) {
-        RCLCPP_FATAL(log,
-            "Parameter 'new_id' must be 0–%d. Got: %d",
-            static_cast<int>(m80106::MAX_MOTOR_ID), new_id_i);
-        rclcpp::shutdown();
-        return 1;
-    }
-    if (target_id_i == new_id_i) {
-        RCLCPP_WARN(log, "target_id == new_id (%d). Nothing to do.", target_id_i);
-        rclcpp::shutdown();
-        return 0;
-    }
+        RCLCPP_INFO(get_logger(), "Found %zu port(s) matching '%s'.",
+                    ports.size(), pidvid.c_str());
 
-    const auto target_id = static_cast<uint8_t>(target_id_i);
-    const auto new_id    = static_cast<uint8_t>(new_id_i);
+        // ── Scan each port ────────────────────────────────────────────────
+        std::map<std::string, std::vector<uint8_t>> results;
+        for (const std::string & port : ports) {
+            results[port] = scanPort(port);
+        }
 
-    // ── Discover adapter ──────────────────────────────────────────────────
-    std::unique_ptr<m80106::MotorBus> bus;
-    try {
-        if (!explicit_port.empty()) {
-            bus = std::make_unique<m80106::MotorBus>(explicit_port, true);
-        } else if (!serial_number.empty()) {
-            const auto ports = serial::list_ports();
-            std::string matched;
-            for (const auto & pi : ports) {
-                if (pi.hardware_id.find(pidvid)        != std::string::npos &&
-                    pi.hardware_id.find(serial_number) != std::string::npos)
-                {
-                    matched = pi.port;
+        // ── Summary (mirrors actuator_ping output) ────────────────────────
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+        RCLCPP_INFO(get_logger(), "SUMMARY  (%zu port(s) scanned)", ports.size());
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+
+        size_t total_motors = 0;
+        for (const std::string & port : ports) {
+            const auto & ids = results[port];
+            total_motors += ids.size();
+            if (ids.empty()) {
+                RCLCPP_INFO(get_logger(), "  %-20s  → no actuators", port.c_str());
+            } else {
+                std::string id_list;
+                for (uint8_t id : ids) {
+                    if (!id_list.empty()) id_list += ", ";
+                    id_list += std::to_string(static_cast<int>(id));
+                }
+                RCLCPP_INFO(get_logger(), "  %-20s  → %zu actuator(s): [%s]",
+                            port.c_str(), ids.size(), id_list.c_str());
+            }
+        }
+        RCLCPP_INFO(get_logger(),
+                    "─────────────────────────────────────────────────────");
+        RCLCPP_INFO(get_logger(),
+                    "Total: %zu actuator(s) across %zu port(s).",
+                    total_motors, ports.size());
+
+        // ── Post-summary safety checks ────────────────────────────────────
+
+        if (target_id_i > 14) {
+            RCLCPP_WARN(get_logger(),
+                "This node only supports changing IDs up to 14. "
+                "target_id=%d is out of range.",
+                target_id_i);
+            return;
+        }
+        if (new_id_i > 14) {
+            RCLCPP_WARN(get_logger(),
+                "This node only supports changing IDs up to 14. "
+                "new_id=%d is out of range.",
+                new_id_i);
+            return;
+        }
+        if (target_id_i == new_id_i) {
+            RCLCPP_WARN(get_logger(),
+                "target_id == new_id (%d). Nothing to do.", target_id_i);
+            return;
+        }
+
+        const auto target_id = static_cast<uint8_t>(target_id_i);
+        const auto new_id    = static_cast<uint8_t>(new_id_i);
+
+        // Collect every port that contains target_id
+        std::vector<std::string> ports_with_target;
+        for (const std::string & port : ports) {
+            for (uint8_t id : results[port]) {
+                if (id == target_id) {
+                    ports_with_target.push_back(port);
                     break;
                 }
             }
-            if (matched.empty()) {
-                RCLCPP_FATAL(log, "No adapter matching PID:VID=%s SNR=%s",
-                             pidvid.c_str(), serial_number.c_str());
-                rclcpp::shutdown();
-                return 1;
+        }
+
+        if (ports_with_target.empty()) {
+            RCLCPP_WARN(get_logger(),
+                "No actuator with target_id=%d found on any scanned port.",
+                target_id_i);
+            return;
+        }
+
+        if (ports_with_target.size() > 1) {
+            RCLCPP_WARN(get_logger(),
+                "Actuator with target_id=%d was found on %zu different USB paths:",
+                target_id_i, ports_with_target.size());
+            for (const auto & p : ports_with_target) {
+                RCLCPP_WARN(get_logger(), "  %s", p.c_str());
             }
-            bus = std::make_unique<m80106::MotorBus>(matched, true);
+            RCLCPP_WARN(get_logger(),
+                "Cannot safely change ID when duplicates exist on different USB paths. "
+                "Aborting.");
+            return;
+        }
+
+        const std::string & target_port = ports_with_target[0];
+
+        // Ensure new_id is free on the target port
+        for (uint8_t id : results[target_port]) {
+            if (id == new_id) {
+                RCLCPP_WARN(get_logger(),
+                    "new_id=%d is already occupied by another motor on %s. "
+                    "Choose a different ID.",
+                    new_id_i, target_port.c_str());
+                return;
+            }
+        }
+
+        // ── Attempt ID change ─────────────────────────────────────────────
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+        RCLCPP_INFO(get_logger(),
+                    "Changing motor ID %d → %d on port %s",
+                    target_id_i, new_id_i, target_port.c_str());
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+
+        if (debug) {
+            RCLCPP_INFO(get_logger(),
+                "[DEBUG] debug=true  reboot_wait_ms=%d", reboot_wait_ms);
+        }
+
+        m80106::MotorDriver driver(target_port);
+        const std::vector<uint8_t> post_ids =
+            tryChangeMotorId(driver, target_id, new_id,
+                             reboot_wait_ms, debug, get_logger());
+
+        // ── Post-change summary ───────────────────────────────────────────
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+        RCLCPP_INFO(get_logger(), "POST-CHANGE SCAN  (port: %s)",
+                    target_port.c_str());
+        RCLCPP_INFO(get_logger(),
+                    "═════════════════════════════════════════════════════");
+
+        if (post_ids.empty() && !debug) {
+            // empty can mean send failed (debug would have already logged it)
+            RCLCPP_WARN(get_logger(), "  No motors responded on the bus.");
         } else {
-            bus = std::make_unique<m80106::MotorBus>(pidvid);
+            for (uint8_t id : post_ids) {
+                RCLCPP_INFO(get_logger(),
+                    "  [PRESENT] Actuator ID %d on %s", id, target_port.c_str());
+            }
+            if (post_ids.empty()) {
+                RCLCPP_WARN(get_logger(), "  No motors responded on the bus.");
+            }
         }
-    } catch (const std::exception & e) {
-        RCLCPP_FATAL(log, "Adapter discovery failed: %s", e.what());
-        rclcpp::shutdown();
-        return 1;
-    }
 
-    if (!bus->isConnected()) {
-        RCLCPP_FATAL(log,
-            "RS-485 adapter not found. "
-            "Check USB connection or use --ros-args -p port:=/dev/ttyUSBx");
-        rclcpp::shutdown();
-        return 1;
-    }
-    RCLCPP_INFO(log, "Adapter: %s  (%s)",
-                bus->portPath().c_str(), bus->hardwareId().c_str());
-
-    // ── Open driver ───────────────────────────────────────────────────────
-    m80106::MotorDriver driver(bus->portPath());
-
-    // ── Initial scan ──────────────────────────────────────────────────────
-    RCLCPP_INFO(log, "Scanning bus...");
-    const std::vector<uint8_t> initial_ids = driver.scanMotors();
-
-    bool target_found = false;
-    bool new_id_taken = false;
-    for (uint8_t id : initial_ids) {
-        if (id == target_id) { target_found = true; }
-        if (id == new_id)    { new_id_taken = true; }
-    }
-
-    if (!target_found) {
-        RCLCPP_FATAL(log,
-            "Motor with target_id=%d not found on the bus. "
-            "Detected IDs: [", target_id);
-        for (auto id : initial_ids) {
-            RCLCPP_FATAL(log, "  %d", id);
+        bool new_id_present    = false;
+        bool target_id_present = false;
+        for (uint8_t id : post_ids) {
+            if (id == new_id)    { new_id_present    = true; }
+            if (id == target_id) { target_id_present = true; }
         }
-        rclcpp::shutdown();
-        return 1;
+
+        RCLCPP_INFO(get_logger(),
+                    "─────────────────────────────────────────────────────");
+
+        if (new_id_present && !target_id_present) {
+            RCLCPP_INFO(get_logger(),
+                "SUCCESS: Motor ID changed from %d to %d.",
+                target_id_i, new_id_i);
+        } else if (new_id_present && target_id_present) {
+            RCLCPP_WARN(get_logger(),
+                "PARTIAL: new_id=%d is present but old target_id=%d is ALSO still present. "
+                "Check for duplicate motors or a partial reboot.",
+                new_id_i, target_id_i);
+        } else if (!new_id_present && target_id_present) {
+            RCLCPP_ERROR(get_logger(),
+                "FAILED: Motor still responds at old ID %d; new_id=%d not found.\n"
+                "The packet may not be supported by this firmware.\n"
+                "Try --ros-args -p debug:=true -p reboot_wait_ms:=3000 for more detail.",
+                target_id_i, new_id_i);
+        } else {
+            RCLCPP_ERROR(get_logger(),
+                "FAILED: Motor %d did not respond at new_id=%d after the change attempt.\n"
+                "Possible causes:\n"
+                "  • Your firmware version does not support runtime ID changes via this packet.\n"
+                "  • Use the vendor 'MotorID_Set' utility (Windows) to change the ID offline.\n"
+                "  • Verify the motor is operational (power, RS-485 wiring).\n"
+                "  • Try --ros-args -p debug:=true -p reboot_wait_ms:=3000 for more detail.",
+                target_id_i, new_id_i);
+        }
     }
 
-    if (new_id_taken) {
-        RCLCPP_FATAL(log,
-            "new_id=%d is already occupied by another motor on the bus. "
-            "Choose a different ID.", new_id);
-        rclcpp::shutdown();
-        return 1;
+private:
+    std::vector<uint8_t> scanPort(const std::string & port)
+    {
+        std::string hw_id = "n/a";
+        for (const serial::PortInfo & info : serial::list_ports()) {
+            if (info.port == port) {
+                hw_id = info.hardware_id;
+                break;
+            }
+        }
+
+        RCLCPP_INFO(get_logger(),
+                    "─────────────────────────────────────────────────────");
+        RCLCPP_INFO(get_logger(), "Port      : %s", port.c_str());
+        RCLCPP_INFO(get_logger(), "Hardware  : %s", hw_id.c_str());
+        RCLCPP_INFO(get_logger(), "Scanning actuators (IDs 0–%d) ...",
+                    static_cast<int>(m80106::MAX_MOTOR_ID));
+
+        std::vector<uint8_t> found;
+        try {
+            m80106::MotorDriver driver(port);
+            found = driver.scanMotors();
+        } catch (const std::exception & e) {
+            RCLCPP_ERROR(get_logger(),
+                         "Failed to open %s: %s  (check dialout group membership)",
+                         port.c_str(), e.what());
+            return found;
+        }
+
+        if (found.empty()) {
+            RCLCPP_WARN(get_logger(),
+                        "No Unitree actuators responded on %s.", port.c_str());
+        } else {
+            RCLCPP_INFO(get_logger(),
+                        "%zu actuator(s) confirmed on %s:",
+                        found.size(), port.c_str());
+            for (uint8_t id : found) {
+                RCLCPP_INFO(get_logger(),
+                            "  [PRESENT] Actuator ID %d on %s", id, port.c_str());
+            }
+        }
+        return found;
     }
+};
 
-    RCLCPP_INFO(log, "Pre-change scan OK: motor %d found, new_id %d is free.",
-                target_id, new_id);
+}  // namespace m80106_bringup
 
-    // ── Attempt ID change ─────────────────────────────────────────────────
-    const bool ok = tryChangeMotorId(driver, target_id, new_id, log);
+// ─────────────────────────────────────────────────────────────────────────────
 
-    if (ok) {
-        RCLCPP_INFO(log,
-            "SUCCESS: Motor ID changed from %d to %d. "
-            "You may now use --ros-args otherwise at the new ID.",
-            target_id, new_id);
-    } else {
-        RCLCPP_ERROR(log,
-            "FAILED: Motor %d did not respond at new_id=%d after the change attempt.\n"
-            "Possible causes:\n"
-            "  • Your firmware version does not support runtime ID changes via this packet.\n"
-            "  • Use the vendor 'MotorID_Set' utility (Windows) to change the ID offline.\n"
-            "  • Verify the motor is operational (power, RS-485 wiring).",
-            target_id, new_id);
-        rclcpp::shutdown();
-        return 1;
-    }
-
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<m80106_bringup::ChangeIdNode>();
+    rclcpp::spin_some(node);
     rclcpp::shutdown();
     return 0;
 }
