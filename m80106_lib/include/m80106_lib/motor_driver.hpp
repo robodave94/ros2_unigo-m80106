@@ -21,15 +21,20 @@
  *
  * ─── SDK field quick-reference (all quantities are rotor-side) ───────────
  *
- *   MotorCmd field  │ Unit    │ Range           │ Description
+ *   MotorCmd field  │ Unit    │ Protocol Range  │ Description
  *   ────────────────┼─────────┼─────────────────┼─────────────────────────
  *   id              │ int     │ 0–14  (15=bcast) │ Motor address
  *   mode            │ uint16  │ 0/1/2           │ BRAKE / FOC / CALIBRATE
- *   T               │ N·m     │ ±127.99         │ Desired torque
- *   W               │ rad/s   │ ±804.00         │ Desired speed
+ *   T               │ N·m     │ ±127.99  *      │ Desired torque
+ *   W               │ rad/s   │ ±804.00  *      │ Desired speed
  *   Pos             │ rad     │ ±411774         │ Desired position
  *   K_P             │ —       │ 0–25.599        │ Position stiffness
  *   K_W             │ —       │ 0–25.599        │ Velocity damping
+ *
+ *   * Protocol encoding maximums — NOT the motor's physical limits.
+ *     GO-M8010-6 actual capabilities (output shaft):
+ *       peak torque ≈ 23.7 N·m,  max speed ≈ 21 rad/s (≈ 200 RPM).
+ *     See ROTOR_PEAK_TORQUE_NM / ROTOR_MAX_SPEED_RADS in motor_types.hpp.
  *
  *   MotorData field │ Unit    │ Description
  *   ────────────────┼─────────┼─────────────────────────────────────────────
@@ -64,102 +69,106 @@
  * @endcode
  */
 
-namespace m80106 {
-
-class MotorDriver
+namespace m80106
 {
-public:
-    /**
-     * @brief Open the RS-485 serial port.
-     *
-     * @param port_path   Device path, e.g. "/dev/ttyUSB0".
-     * @param baudrate    Baud rate.  GO-M8010-6 requires 4 000 000 bps.
-     * @param timeout_us  Per-message receive timeout in microseconds.
-     */
-    explicit MotorDriver(
-        const std::string & port_path,
-        uint32_t            baudrate   = 4000000,
-        size_t              timeout_us = 20000)
-    : serial_(port_path, /*recvLength=*/16, baudrate, timeout_us)
-    {}
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Core communicate
-    // ─────────────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Send a MotorCmd and receive the corresponding MotorData.
-     *
-     * This is a single-bus-transaction (send 17 bytes, receive 16 bytes).
-     * The call blocks for at most `timeout_us` microseconds.
-     *
-     * @param[in]  cmd   Command to send (caller must set motorType, id,
-     *                   mode and all setpoint fields).
-     * @param[out] data  Received feedback.  Check data.correct before use.
-     * @return           true if data.correct is true.
-     */
-    bool sendRecv(MotorCmd & cmd, MotorData & data)
+    class MotorDriver
     {
-        return serial_.sendRecv(&cmd, &data);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // Convenience helpers
-    // ─────────────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Send a brake (zero-setpoint) command to motor @p id.
-     *
-     * @param[in]  id    Motor ID (0–MAX_MOTOR_ID).
-     * @param[out] data  Feedback (check data.correct).
-     * @return           true if motor responded with valid feedback.
-     */
-    bool brake(uint8_t id, MotorData & data)
-    {
-        MotorCmd cmd;
-        cmd.motorType = MotorType::GO_M8010_6;
-        cmd.id        = id;
-        cmd.mode      = toSDKMode(MotorMode::BRAKE);
-        cmd.T         = 0.0f;
-        cmd.W         = 0.0f;
-        cmd.Pos       = 0.0f;
-        cmd.K_P       = 0.0f;
-        cmd.K_W       = 0.0f;
-        return sendRecv(cmd, data);
-    }
-
-    /**
-     * @brief Scan the RS-485 bus for all responding motor IDs.
-     *
-     * Sends a brake command to each ID in [0, MAX_MOTOR_ID] and records
-     * those that respond with valid (correct=true) feedback.
-     *
-     * Worst-case scan time ≈ 15 × timeout_us (default ≈ 300 ms).
-     *
-     * @return Vector of motor IDs (values 0–14) that responded.
-     */
-    std::vector<uint8_t> scanMotors()
-    {
-        std::vector<uint8_t> found;
-        MotorData data;
-        for (uint8_t id = 0; id <= MAX_MOTOR_ID; ++id) {
-            if (brake(id, data) && data.correct) {
-                found.push_back(id);
-            }
+    public:
+        /**
+         * @brief Open the RS-485 serial port.
+         *
+         * @param port_path   Device path, e.g. "/dev/ttyUSB0".
+         * @param baudrate    Baud rate.  GO-M8010-6 requires 4 000 000 bps.
+         * @param timeout_us  Per-message receive timeout in microseconds.
+         */
+        explicit MotorDriver(
+            const std::string &port_path,
+            uint32_t baudrate = 4000000,
+            size_t timeout_us = 20000)
+            : serial_(port_path, /*recvLength=*/16, baudrate, timeout_us)
+        {
         }
-        return found;
-    }
 
-    /**
-     * @brief Direct access to the underlying SerialPort for advanced use.
-     *
-     * Use this if you need the raw send/recv byte API, or to reconfigure
-     * baud rate at runtime via serialPort().resetSerial(...).
-     */
-    SerialPort & serialPort() noexcept { return serial_; }
+        // ─────────────────────────────────────────────────────────────────────
+        // Core communicate
+        // ─────────────────────────────────────────────────────────────────────
 
-private:
-    SerialPort serial_;
-};
+        /**
+         * @brief Send a MotorCmd and receive the corresponding MotorData.
+         *
+         * This is a single-bus-transaction (send 17 bytes, receive 16 bytes).
+         * The call blocks for at most `timeout_us` microseconds.
+         *
+         * @param[in]  cmd   Command to send (caller must set motorType, id,
+         *                   mode and all setpoint fields).
+         * @param[out] data  Received feedback.  Check data.correct before use.
+         * @return           true if data.correct is true.
+         */
+        bool sendRecv(MotorCmd &cmd, MotorData &data)
+        {
+            return serial_.sendRecv(&cmd, &data);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Convenience helpers
+        // ─────────────────────────────────────────────────────────────────────
+
+        /**
+         * @brief Send a brake (zero-setpoint) command to motor @p id.
+         *
+         * @param[in]  id    Motor ID (0–MAX_MOTOR_ID).
+         * @param[out] data  Feedback (check data.correct).
+         * @return           true if motor responded with valid feedback.
+         */
+        bool brake(uint8_t id, MotorData &data)
+        {
+            MotorCmd cmd;
+            cmd.motorType = MotorType::GO_M8010_6;
+            cmd.id = id;
+            cmd.mode = toSDKMode(MotorMode::BRAKE);
+            cmd.T = 0.0f;
+            cmd.W = 0.0f;
+            cmd.Pos = 0.0f;
+            cmd.K_P = 0.0f;
+            cmd.K_W = 0.0f;
+            return sendRecv(cmd, data);
+        }
+
+        /**
+         * @brief Scan the RS-485 bus for all responding motor IDs.
+         *
+         * Sends a brake command to each ID in [0, MAX_MOTOR_ID] and records
+         * those that respond with valid (correct=true) feedback.
+         *
+         * Worst-case scan time ≈ 15 × timeout_us (default ≈ 300 ms).
+         *
+         * @return Vector of motor IDs (values 0–14) that responded.
+         */
+        std::vector<uint8_t> scanMotors()
+        {
+            std::vector<uint8_t> found;
+            MotorData data;
+            for (uint8_t id = 0; id <= MAX_MOTOR_ID; ++id)
+            {
+                if (brake(id, data) && data.correct)
+                {
+                    found.push_back(id);
+                }
+            }
+            return found;
+        }
+
+        /**
+         * @brief Direct access to the underlying SerialPort for advanced use.
+         *
+         * Use this if you need the raw send/recv byte API, or to reconfigure
+         * baud rate at runtime via serialPort().resetSerial(...).
+         */
+        SerialPort &serialPort() noexcept { return serial_; }
+
+    private:
+        SerialPort serial_;
+    };
 
 } // namespace m80106

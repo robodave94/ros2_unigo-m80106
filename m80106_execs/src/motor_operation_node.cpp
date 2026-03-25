@@ -53,7 +53,7 @@
 /// reduce jerk during setpoint transitions.
 static const float MIN_DAMPING_KW = m80106::toRotorKd(0.5f);
 
-/// Build a FOC MotorCmd (all fields rotor-side, clamped to hardware limits).
+/// Build a FOC MotorCmd (all fields rotor-side, clamped to protocol limits).
 /// K_W is floored to MIN_DAMPING_KW so no FOC command is ever fully undamped.
 static MotorCmd makeFOCCmd(uint8_t id,
                            float T, float W, float Pos,
@@ -61,31 +61,33 @@ static MotorCmd makeFOCCmd(uint8_t id,
 {
     MotorCmd cmd;
     cmd.motorType = MotorType::GO_M8010_6;
-    cmd.id        = id;
-    cmd.mode      = m80106::toSDKMode(m80106::MotorMode::FOC);
-    cmd.T         = m80106::clamp(T,   -m80106::MAX_TORQUE_NM,  m80106::MAX_TORQUE_NM);
-    cmd.W         = m80106::clamp(W,   -m80106::MAX_SPEED_RADS, m80106::MAX_SPEED_RADS);
-    cmd.Pos       = m80106::clamp(Pos, -m80106::MAX_POS_RAD,    m80106::MAX_POS_RAD);
-    cmd.K_P       = m80106::clamp(K_P,  0.0f, m80106::MAX_KP);
-    cmd.K_W       = std::max(m80106::clamp(K_W, 0.0f, m80106::MAX_KD), MIN_DAMPING_KW);
+    cmd.id = id;
+    cmd.mode = m80106::toSDKMode(m80106::MotorMode::FOC);
+    cmd.T = m80106::clamp(T, -m80106::PROTOCOL_MAX_TORQUE_NM, m80106::PROTOCOL_MAX_TORQUE_NM);
+    cmd.W = m80106::clamp(W, -m80106::PROTOCOL_MAX_SPEED_RADS, m80106::PROTOCOL_MAX_SPEED_RADS);
+    cmd.Pos = m80106::clamp(Pos, -m80106::PROTOCOL_MAX_POS_RAD, m80106::PROTOCOL_MAX_POS_RAD);
+    cmd.K_P = m80106::clamp(K_P, 0.0f, m80106::MAX_KP);
+    cmd.K_W = std::max(m80106::clamp(K_W, 0.0f, m80106::MAX_KD), MIN_DAMPING_KW);
     return cmd;
 }
 
 /// Send @p cmd at 100 Hz for @p duration_ms milliseconds.
 /// Updates @p last_fb with the most recent valid feedback received.
-static void runFor(m80106::MotorDriver & driver,
-                   const MotorCmd & cmd,
+static void runFor(m80106::MotorDriver &driver,
+                   const MotorCmd &cmd,
                    int duration_ms,
-                   MotorData & last_fb)
+                   MotorData &last_fb)
 {
-    constexpr int rate_hz   = 100;
+    constexpr int rate_hz = 100;
     constexpr int period_us = 1000000 / rate_hz;
-    const int     steps     = (duration_ms * rate_hz) / 1000;
+    const int steps = (duration_ms * rate_hz) / 1000;
 
-    for (int i = 0; i < steps && rclcpp::ok(); ++i) {
+    for (int i = 0; i < steps && rclcpp::ok(); ++i)
+    {
         MotorCmd c = cmd;
         MotorData fb;
-        if (driver.sendRecv(c, fb) && fb.correct) {
+        if (driver.sendRecv(c, fb) && fb.correct)
+        {
             last_fb = fb;
         }
         std::this_thread::sleep_for(std::chrono::microseconds(period_us));
@@ -93,16 +95,18 @@ static void runFor(m80106::MotorDriver & driver,
 }
 
 /// Issue brake commands at 100 Hz for @p duration_ms milliseconds.
-static void brakeFor(m80106::MotorDriver & driver, uint8_t id,
-                     int duration_ms, MotorData & last_fb)
+static void brakeFor(m80106::MotorDriver &driver, uint8_t id,
+                     int duration_ms, MotorData &last_fb)
 {
-    constexpr int rate_hz   = 100;
+    constexpr int rate_hz = 100;
     constexpr int period_us = 1000000 / rate_hz;
-    const int     steps     = (duration_ms * rate_hz) / 1000;
+    const int steps = (duration_ms * rate_hz) / 1000;
 
-    for (int i = 0; i < steps && rclcpp::ok(); ++i) {
+    for (int i = 0; i < steps && rclcpp::ok(); ++i)
+    {
         MotorData fb;
-        if (driver.brake(id, fb) && fb.correct) {
+        if (driver.brake(id, fb) && fb.correct)
+        {
             last_fb = fb;
         }
         std::this_thread::sleep_for(std::chrono::microseconds(period_us));
@@ -110,29 +114,32 @@ static void brakeFor(m80106::MotorDriver & driver, uint8_t id,
 }
 
 /// Log a one-line telemetry snapshot (output-side values).
-static void logState(rclcpp::Logger logger, const MotorData & fb)
+static void logState(rclcpp::Logger logger, const MotorData &fb)
 {
-    if (!fb.correct) {
+    if (!fb.correct)
+    {
         RCLCPP_WARN(logger, "  (no valid feedback)");
         return;
     }
     RCLCPP_INFO(logger,
-        "  ID=%-2d  Mode=%-9s  Pos=%+.3f rad(out)  "
-        "Speed=%+.2f rad/s(out)  Torque=%+.2f N·m  Temp=%d°C",
-        static_cast<int>(fb.motor_id),
-        m80106::modeString(static_cast<m80106::MotorMode>(fb.mode)),
-        m80106::toOutputPos(fb.Pos),
-        m80106::toOutputSpeed(fb.W),
-        fb.T,
-        fb.Temp);
+                "  ID=%-2d  Mode=%-9s  Pos=%+.3f rad(out)  "
+                "Speed=%+.2f rad/s(out)  Torque=%+.2f N·m  Temp=%d°C",
+                static_cast<int>(fb.motor_id),
+                m80106::modeString(static_cast<m80106::MotorMode>(fb.mode)),
+                m80106::toOutputPos(fb.Pos),
+                m80106::toOutputSpeed(fb.W),
+                fb.T,
+                fb.Temp);
 }
 
 /// Check feedback for hardware errors. Returns true if an error was detected.
-static bool checkError(rclcpp::Logger logger, const MotorData & fb)
+static bool checkError(rclcpp::Logger logger, const MotorData &fb)
 {
-    if (!fb.correct) return false;
+    if (!fb.correct)
+        return false;
     auto err = m80106::toMotorError(fb.MError);
-    if (err != m80106::MotorError::NONE) {
+    if (err != m80106::MotorError::NONE)
+    {
         RCLCPP_ERROR(logger, "  *** HARDWARE ERROR: %s (code %d) ***",
                      m80106::errorString(err), fb.MError);
         return true;
@@ -144,19 +151,20 @@ static bool checkError(rclcpp::Logger logger, const MotorData & fb)
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
 
-int main(int argc, char * argv[])
+int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("motor_operation");
 
-    node->declare_parameter<std::string>("pidvid",   "0403:6011");
-    node->declare_parameter<int>        ("motor_id", 0);
+    node->declare_parameter<std::string>("pidvid", "0403:6011");
+    node->declare_parameter<int>("motor_id", 0);
 
-    const std::string pidvid   = node->get_parameter("pidvid").as_string();
-    const int         motor_id = node->get_parameter("motor_id").as_int();
+    const std::string pidvid = node->get_parameter("pidvid").as_string();
+    const int motor_id = node->get_parameter("motor_id").as_int();
 
     // ── Validate parameters ───────────────────────────────────────────────
-    if (motor_id < 0 || motor_id > static_cast<int>(m80106::MAX_MOTOR_ID)) {
+    if (motor_id < 0 || motor_id > static_cast<int>(m80106::MAX_MOTOR_ID))
+    {
         RCLCPP_ERROR(node->get_logger(),
                      "motor_id=%d is out of range [0, %d]. Aborting.",
                      motor_id, static_cast<int>(m80106::MAX_MOTOR_ID));
@@ -171,7 +179,8 @@ int main(int argc, char * argv[])
 
     const auto scan = m80106_execs::scanAllPorts(pidvid);
 
-    if (scan.ports.empty()) {
+    if (scan.ports.empty())
+    {
         RCLCPP_ERROR(node->get_logger(),
                      "No ports found for PID:VID '%s'. Aborting.", pidvid.c_str());
         rclcpp::shutdown();
@@ -179,18 +188,24 @@ int main(int argc, char * argv[])
     }
 
     // Per-port results
-    for (const auto & ps : scan.ports) {
+    for (const auto &ps : scan.ports)
+    {
         RCLCPP_INFO(node->get_logger(),
                     "─────────────────────────────────────────────────────");
         RCLCPP_INFO(node->get_logger(), "Port      : %s", ps.port.c_str());
         RCLCPP_INFO(node->get_logger(), "Hardware  : %s", ps.hardware_id.c_str());
-        if (ps.motor_ids.empty()) {
+        if (ps.motor_ids.empty())
+        {
             RCLCPP_WARN(node->get_logger(),
                         "No Unitree actuators responded on %s.", ps.port.c_str());
-        } else {
+        }
+        else
+        {
             std::string id_list;
-            for (uint8_t id : ps.motor_ids) {
-                if (!id_list.empty()) id_list += ", ";
+            for (uint8_t id : ps.motor_ids)
+            {
+                if (!id_list.empty())
+                    id_list += ", ";
                 id_list += std::to_string(static_cast<int>(id));
             }
             RCLCPP_INFO(node->get_logger(), "Actuators : [%s]", id_list.c_str());
@@ -206,18 +221,20 @@ int main(int argc, char * argv[])
     // ── Locate target motor ───────────────────────────────────────────────
     const auto all = scan.allMotors();
     auto it = std::find_if(all.begin(), all.end(),
-        [&](const m80106_execs::DiscoveredMotor & m) {
-            return m.id == static_cast<uint8_t>(motor_id);
-        });
+                           [&](const m80106_execs::DiscoveredMotor &m)
+                           {
+                               return m.id == static_cast<uint8_t>(motor_id);
+                           });
 
-    if (it == all.end()) {
+    if (it == all.end())
+    {
         RCLCPP_ERROR(node->get_logger(),
                      "Motor ID %d not found on any port. Aborting.", motor_id);
         rclcpp::shutdown();
         return 1;
     }
 
-    const std::string port  = it->port;
+    const std::string port = it->port;
     const std::string hw_id = it->hardware_id;
     const uint8_t id = static_cast<uint8_t>(motor_id);
 
@@ -240,7 +257,8 @@ int main(int argc, char * argv[])
                 "[1/5] BRAKE — reading initial state ...");
     brakeFor(driver, id, 500, fb);
     logState(node->get_logger(), fb);
-    if (checkError(node->get_logger(), fb)) {
+    if (checkError(node->get_logger(), fb))
+    {
         RCLCPP_ERROR(node->get_logger(), "Hardware error at startup. Aborting.");
         brakeFor(driver, id, 1000, fb);
         rclcpp::shutdown();
@@ -265,11 +283,11 @@ int main(int argc, char * argv[])
                     "  +5 rad/s (output) = %.1f rad/s (rotor) for 3 s ...",
                     m80106::toRotorSpeed(5.0f));
         auto cmd_fwd = makeFOCCmd(id,
-            /*T=*/0.0f,
-            /*W=*/m80106::toRotorSpeed(5.0f),
-            /*Pos=*/0.0f,
-            /*K_P=*/0.0f,
-            /*K_W=*/K_W);
+                                  /*T=*/0.0f,
+                                  /*W=*/m80106::toRotorSpeed(5.0f),
+                                  /*Pos=*/0.0f,
+                                  /*K_P=*/0.0f,
+                                  /*K_W=*/K_W);
         runFor(driver, cmd_fwd, 3000, fb);
         logState(node->get_logger(), fb);
         checkError(node->get_logger(), fb);
@@ -278,19 +296,19 @@ int main(int argc, char * argv[])
         RCLCPP_INFO(node->get_logger(),
                     "  Decelerating to 0 rad/s (500 ms) ...");
         auto cmd_zero = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f, /*Pos=*/0.0f,
-            /*K_P=*/0.0f, /*K_W=*/K_W);
+                                   /*T=*/0.0f, /*W=*/0.0f, /*Pos=*/0.0f,
+                                   /*K_P=*/0.0f, /*K_W=*/K_W);
         runFor(driver, cmd_zero, 500, fb);
 
         RCLCPP_INFO(node->get_logger(),
                     "  -5 rad/s (output) = %.1f rad/s (rotor) for 3 s ...",
                     m80106::toRotorSpeed(-5.0f));
         auto cmd_rev = makeFOCCmd(id,
-            /*T=*/0.0f,
-            /*W=*/m80106::toRotorSpeed(-5.0f),
-            /*Pos=*/0.0f,
-            /*K_P=*/0.0f,
-            /*K_W=*/K_W);
+                                  /*T=*/0.0f,
+                                  /*W=*/m80106::toRotorSpeed(-5.0f),
+                                  /*Pos=*/0.0f,
+                                  /*K_P=*/0.0f,
+                                  /*K_W=*/K_W);
         runFor(driver, cmd_rev, 3000, fb);
         logState(node->get_logger(), fb);
         checkError(node->get_logger(), fb);
@@ -377,8 +395,8 @@ int main(int argc, char * argv[])
         RCLCPP_INFO(node->get_logger(),
                     "  +0.15 N·m (rotor) for 1.5 s ...");
         auto cmd_pos_trq = makeFOCCmd(id,
-            /*T=*/0.15f, /*W=*/0.0f, /*Pos=*/0.0f,
-            /*K_P=*/0.0f, /*K_W=*/0.0f);
+                                      /*T=*/0.15f, /*W=*/0.0f, /*Pos=*/0.0f,
+                                      /*K_P=*/0.0f, /*K_W=*/0.0f);
         runFor(driver, cmd_pos_trq, 1500, fb);
         logState(node->get_logger(), fb);
         checkError(node->get_logger(), fb);
@@ -387,15 +405,15 @@ int main(int argc, char * argv[])
         RCLCPP_INFO(node->get_logger(),
                     "  Zero-torque settle (300 ms) ...");
         auto cmd_settle = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f, /*Pos=*/0.0f,
-            /*K_P=*/0.0f, /*K_W=*/0.0f);
+                                     /*T=*/0.0f, /*W=*/0.0f, /*Pos=*/0.0f,
+                                     /*K_P=*/0.0f, /*K_W=*/0.0f);
         runFor(driver, cmd_settle, 300, fb);
 
         RCLCPP_INFO(node->get_logger(),
                     "  -0.15 N·m (rotor) for 1.5 s ...");
         auto cmd_neg_trq = makeFOCCmd(id,
-            /*T=*/-0.15f, /*W=*/0.0f, /*Pos=*/0.0f,
-            /*K_P=*/0.0f, /*K_W=*/0.0f);
+                                      /*T=*/-0.15f, /*W=*/0.0f, /*Pos=*/0.0f,
+                                      /*K_P=*/0.0f, /*K_W=*/0.0f);
         runFor(driver, cmd_neg_trq, 1500, fb);
         logState(node->get_logger(), fb);
         checkError(node->get_logger(), fb);
@@ -406,9 +424,9 @@ int main(int argc, char * argv[])
         const float K_P_recovery = m80106::toRotorKp(20.0f);
         const float K_W_recovery = m80106::toRotorKd(1.0f);
         auto cmd_recover = makeFOCCmd(id,
-            /*T=*/0.0f, /*W=*/0.0f,
-            /*Pos=*/pre_torque_rotor,
-            /*K_P=*/K_P_recovery, /*K_W=*/K_W_recovery);
+                                      /*T=*/0.0f, /*W=*/0.0f,
+                                      /*Pos=*/pre_torque_rotor,
+                                      /*K_P=*/K_P_recovery, /*K_W=*/K_W_recovery);
         runFor(driver, cmd_recover, 3000, fb);
         logState(node->get_logger(), fb);
         checkError(node->get_logger(), fb);
