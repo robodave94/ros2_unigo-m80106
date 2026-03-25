@@ -11,27 +11,6 @@ find_package(rclcpp      REQUIRED)
 find_package(m80106_lib  REQUIRED)
 find_package(serial      REQUIRED)
 
-# ─── m80106_change_id ────────────────────────────────────────────────────────
-add_executable(m80106_change_id
-    src/change_id_node.cpp
-)
-
-target_include_directories(m80106_change_id
-    PRIVATE
-        include
-)
-
-target_link_libraries(m80106_change_id
-    m80106_lib::m80106_lib
-)
-
-ament_target_dependencies(m80106_change_id
-    rclcpp
-    serial
-)
-
-target_compile_features(m80106_change_id PRIVATE cxx_std_17)
-
 # ─── actuator_ping ───────────────────────────────────────────────────────────
 add_executable(actuator_ping
     src/actuator_ping_node.cpp
@@ -97,7 +76,6 @@ target_compile_features(motor_operation PRIVATE cxx_std_17)
 
 # ─── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS
-    m80106_change_id
     actuator_ping
     scan_motor_info
     motor_operation

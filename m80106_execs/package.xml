@@ -9,7 +9,6 @@
 
     Provides the following executables:
       actuator_ping      — one-shot CLI: discover and ping all actuators.
-      m80106_change_id   — one-shot CLI: change a motor's RS-485 ID.
       scan_motor_info    — live htop-style terminal monitor for motor telemetry.
       motor_operation    — preprogrammed motion-verification routine.
   </description>

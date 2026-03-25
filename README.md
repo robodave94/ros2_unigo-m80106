@@ -103,34 +103,6 @@ ros2 run m80106_execs actuator_ping --ros-args -p pidvid:=0403:6011
 
 ---
 
-### `m80106_change_id`
-
-Changes a motor's RS-485 ID with full safety checks (duplicate detection, range
-validation, conflict avoidance). Uses the vendor RS-485 broadcast packet
-(`0xFE 0xEE` header + CRC16) to trigger the firmware ID update.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `pidvid` | string | `"0403:6011"` | USB PID:VID of the RS-485 adapter |
-| `target_id` | int | **required** | Current motor ID to change (0–14) |
-| `new_id` | int | **required** | Desired new motor ID (0–14) |
-| `reboot_wait_ms` | int | `1000` | ms to wait for motor reboot before re-scan |
-| `debug` | bool | `false` | Print raw packet hex and full rescan detail |
-
-```bash
-ros2 run m80106_execs m80106_change_id --ros-args -p target_id:=0 -p new_id:=3
-
-# With debug output and longer reboot wait:
-ros2 run m80106_execs m80106_change_id \
-    --ros-args -p target_id:=0 -p new_id:=3 -p debug:=true -p reboot_wait_ms:=3000
-```
-
-> **Note:** For low-level ID changes outside of ROS (e.g. initial setup or firmware
-> recovery), use the `changeid` tool from `motor_tools` — see the
-> [Motor Tools](#motor-tools-m80106_libtoolsmotor_tools) section below.
-
----
-
 ### `scan_motor_info`
 
 Live, htop-style terminal monitor for GO-M8010-6 motor telemetry. Continuously
@@ -300,8 +272,8 @@ The green LED on the back of the motor indicates the current mode:
 | **Motor mode** (default) | Slow blink |
 | **Bootloader mode** | Fast blink × 3 |
 
-> If you need to change a motor ID via the ROS workflow (with automatic scanning and
-> safety checks), use the `m80106_change_id` executable from `m80106_execs` instead.
+> If you need to change a motor ID, use the `changeid` tool from `motor_tools`
+> — see the [Motor Tools](#motor-tools-m80106_libtoolsmotor_tools) section below.
 
 ---
 
