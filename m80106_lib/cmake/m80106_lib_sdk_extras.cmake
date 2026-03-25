@@ -35,3 +35,6 @@ endif()
 
 unset(_m80106_lib_pkg_root)
 unset(_m80106_sdk_so)
+
+# Threads is needed by go_m80106_set_controller.hpp (std::thread / std::mutex)
+find_package(Threads QUIET)

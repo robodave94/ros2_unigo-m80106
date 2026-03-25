@@ -7,6 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(serial REQUIRED)
+find_package(Threads REQUIRED)
 
 # ─── Architecture-conditional SDK shared object ───────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
@@ -55,6 +56,7 @@ target_link_libraries(${PROJECT_NAME} INTERFACE
     #               target is imported, so the name resolves correctly.
     $<BUILD_INTERFACE:unitree_motor_sdk>
     $<INSTALL_INTERFACE:unitree_motor_sdk>
+    Threads::Threads
 )
 
 # ─── Installations ────────────────────────────────────────────────────────────

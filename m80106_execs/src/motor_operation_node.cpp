@@ -42,7 +42,7 @@
 #include "m80106_lib/motor_driver.hpp"
 #include "m80106_lib/motor_types.hpp"
 
-#include "m80106_execs/multi_serial_go8_scanner.hpp"
+#include "m80106_lib/multi_serial_go8_scanner.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -177,7 +177,7 @@ int main(int argc, char *argv[])
                 "Searching for serial ports matching PID:VID '%s' ...",
                 pidvid.c_str());
 
-    const auto scan = m80106_execs::scanAllPorts(pidvid);
+    const auto scan = m80106::scanAllPorts(pidvid);
 
     if (scan.ports.empty())
     {
@@ -221,7 +221,7 @@ int main(int argc, char *argv[])
     // ── Locate target motor ───────────────────────────────────────────────
     const auto all = scan.allMotors();
     auto it = std::find_if(all.begin(), all.end(),
-                           [&](const m80106_execs::DiscoveredMotor &m)
+                           [&](const m80106::DiscoveredMotor &m)
                            {
                                return m.id == static_cast<uint8_t>(motor_id);
                            });

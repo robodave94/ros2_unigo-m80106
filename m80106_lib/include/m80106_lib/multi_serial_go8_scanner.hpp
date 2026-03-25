@@ -9,7 +9,7 @@
  *
  * Usage:
  * @code
- *   auto result = m80106_execs::scanAllPorts("0403:6011");
+ *   auto result = m80106::scanAllPorts("0403:6011");
  *   for (const auto & port : result.ports) {
  *       for (uint8_t id : port.motor_ids) { ... }
  *   }
@@ -26,7 +26,7 @@
 #include "m80106_lib/motor_driver.hpp"
 #include "m80106_lib/motor_types.hpp"
 
-namespace m80106_execs {
+namespace m80106 {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data types
@@ -156,4 +156,4 @@ scanAllPorts(const std::string & pidvid)
     return result;
 }
 
-}  // namespace m80106_execs
+}  // namespace m80106

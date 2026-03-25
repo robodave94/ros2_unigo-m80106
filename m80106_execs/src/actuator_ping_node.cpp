@@ -23,9 +23,11 @@
 
 #include "rclcpp/rclcpp.hpp"
 
-#include "m80106_execs/multi_serial_go8_scanner.hpp"
+#include "m80106_lib/multi_serial_go8_scanner.hpp"
 
 namespace m80106_execs {
+
+using m80106::scanAllPorts;
 
 class ActuatorPingNode : public rclcpp::Node
 {
