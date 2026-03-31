@@ -240,14 +240,18 @@ int main(int argc, char * argv[])
         ctrl->setTargetPosition(id, 6.0f * PI);
 
         float max_vel_observed = 0.0f;
-        for (int i = 0; i < 40 && rclcpp::ok(); ++i)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(150));
-            float vel = std::fabs(ctrl->getVelocity(id));
-            if (vel > max_vel_observed) max_vel_observed = vel;
+            using clock = std::chrono::steady_clock;
+            auto deadline = clock::now() + std::chrono::seconds(10);
+            while (clock::now() < deadline && rclcpp::ok())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                float vel = std::fabs(ctrl->getVelocity(id));
+                if (vel > max_vel_observed) max_vel_observed = vel;
+            }
         }
 
-        waitForPosition(logger, *ctrl, id, 6.0f * PI, 0.1f, 10000);
+        waitForPosition(logger, *ctrl, id, 6.0f * PI, 0.1f, 15000);
 
         RCLCPP_INFO(logger,
             "  Max velocity observed: %.3f rad/s (motor max ≈ 21.0)",
@@ -372,10 +376,12 @@ int main(int argc, char * argv[])
                 "  WARN: Global position (%.4f) not near π.", post_zero_global);
         }
 
-        // Move back to the zeroed-position 0 (which is the physical +π location)
-        RCLCPP_INFO(logger, "  Setting target to zeroed 0 (hold position) ...");
-        // After zeroing at +π, to return to global 0, target = -π in zeroed frame
-        ctrl->setTargetPosition(id, -PI);
+        // Move back to global 0 (which is the physical start location).
+        // setTargetPosition takes global (un-zeroed) coordinates, so 0.0f = global origin.
+        // After the motor arrives there, getPosition returns (global 0 - zero_offset π) = -π,
+        // which is what waitForPosition checks in the zeroed frame.
+        RCLCPP_INFO(logger, "  Returning to global 0 (zeroed frame: -π) ...");
+        ctrl->setTargetPosition(id, 0.0f);
         waitForPosition(logger, *ctrl, id, -PI);
 
         RCLCPP_INFO(logger,
