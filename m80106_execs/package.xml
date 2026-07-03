@@ -11,6 +11,7 @@
       actuator_ping      — one-shot CLI: discover and ping all actuators.
       scan_motor_info    — live htop-style terminal monitor for motor telemetry.
       motor_operation    — preprogrammed motion-verification routine.
+      dual_motor_operation — motion-verification routine for two motors at once.
   </description>
 
   <maintainer email="maintainer@example.com">Maintainer</maintainer>

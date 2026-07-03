@@ -59,6 +59,22 @@ ament_target_dependencies(motor_operation
 
 target_compile_features(motor_operation PRIVATE cxx_std_17)
 
+# ─── dual_motor_operation ────────────────────────────────────────────────────
+add_executable(dual_motor_operation
+    src/dual_motor_operation_node.cpp
+)
+
+target_link_libraries(dual_motor_operation
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(dual_motor_operation
+    rclcpp
+    serial
+)
+
+target_compile_features(dual_motor_operation PRIVATE cxx_std_17)
+
 # ─── interface_testing ───────────────────────────────────────────────────────
 add_executable(interface_testing
     src/interface_testing_node.cpp
@@ -80,8 +96,14 @@ install(TARGETS
     actuator_ping
     scan_motor_info
     motor_operation
+    dual_motor_operation
     interface_testing
     DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+    launch
+    DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()

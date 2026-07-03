@@ -1,0 +1,36 @@
+<!--
+  dual_motor_operation.launch.xml
+
+  Launch the dual-motor preprogrammed motion-verification routine for two
+  Unitree GO-M8010-6 actuators running simultaneously on a single RS-485 bus.
+
+  Both motors must be present on the SAME bus (single PID:VID device). The node
+  scans for the adapter, confirms both motor IDs respond, then runs the identical
+  ~30 s motion sequence (BRAKE → VELOCITY → TORQUE → BRAKE) on both motors at once.
+
+  Optional arguments:
+    pidvid       USB PID:VID of the RS-485 adapter   [default: "0403:6011"]
+    motor_id_a   First  motor ID to operate (0-14)   [default: 0]
+    motor_id_b   Second motor ID to operate (0-14)   [default: 1]
+
+  Usage:
+    ros2 launch m80106_execs dual_motor_operation.launch.xml
+    ros2 launch m80106_execs dual_motor_operation.launch.xml motor_id_a:=0 motor_id_b:=2
+-->
+<launch>
+
+  <arg name="pidvid" default="0403:6011"
+       description="USB PID:VID of the RS-485 adapter, e.g. 0403:6011"/>
+  <arg name="motor_id_a" default="0"
+       description="First motor ID to operate (0-14)"/>
+  <arg name="motor_id_b" default="1"
+       description="Second motor ID to operate (0-14)"/>
+
+  <node pkg="m80106_execs" exec="dual_motor_operation"
+        name="dual_motor_operation" output="screen">
+    <param name="pidvid" value="$(var pidvid)"/>
+    <param name="motor_id_a" value="$(var motor_id_a)"/>
+    <param name="motor_id_b" value="$(var motor_id_b)"/>
+  </node>
+
+</launch>

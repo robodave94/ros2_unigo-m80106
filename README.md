@@ -147,6 +147,37 @@ ros2 run m80106_execs motor_operation --ros-args -p motor_id:=2 -p pidvid:=0403:
 
 ---
 
+### `dual_motor_operation`
+
+Same preprogrammed ~30 s motion-verification routine as `motor_operation`, but
+driving **two motors simultaneously**. Every 100 Hz cycle issues the identical
+command to both motors, so they move together through each control mode. Both
+motor IDs must be discovered under the given PID:VID — they may share one RS-485
+bus (a single driver addresses both) or sit on separate buses (one driver each);
+the node detects and handles either case. It aborts if either motor is missing.
+
+| Step | Mode | Action |
+|------|------|--------|
+| 1/5 | BRAKE | Read initial position and telemetry (both motors) |
+| 2/5 | VELOCITY | +5 rad/s for 3 s, then −5 rad/s for 3 s (output side) |
+| 3/5 | POSITION | Move to +0.5 rad, then −0.5 rad, then return to start |
+| 4/5 | TORQUE | +1.5 N·m for 2 s, then −1.5 N·m for 2 s |
+| 5/5 | BRAKE | Safe final state (both motors) |
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pidvid` | string | `"0403:6011"` | USB PID:VID of the RS-485 adapter |
+| `motor_id_a` | int | `0` | First motor ID to operate (0–14) |
+| `motor_id_b` | int | `1` | Second motor ID to operate (0–14) |
+
+```bash
+ros2 run m80106_execs dual_motor_operation --ros-args -p motor_id_a:=0 -p motor_id_b:=1
+ros2 run m80106_execs dual_motor_operation --ros-args -p motor_id_a:=0 -p motor_id_b:=2 -p pidvid:=0403:6011
+ros2 launch m80106_execs dual_motor_operation.launch.xml motor_id_a:=0 motor_id_b:=1
+```
+
+---
+
 ## Tools Submodule (`m80106_lib/tools`)
 
 **Source:** [`unitreerobotics/unitree_actuator_sdk`](https://github.com/unitreerobotics/unitree_actuator_sdk)
