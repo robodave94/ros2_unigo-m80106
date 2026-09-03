@@ -112,38 +112,58 @@ public:
         // ── 1. Validate configs ──────────────────────────────────────────
         validateConfigs(configs);
 
-        // ── 2. Scan ports ────────────────────────────────────────────────
-        auto scan = scanAllPorts(pidvid);
-        if (scan.ports.empty())
-        {
-            throw std::runtime_error(
-                "GoM80106SetController: No serial ports found for PID:VID '" +
-                pidvid + "'");
-        }
+        // ── 2/3. Scan ports and match config IDs to scanned IDs, retrying
+        //        a few times first — a fresh RS-485 bus occasionally
+        //        misreads IDs on the very first pass. ────────────────────
+        constexpr int kMaxScanAttempts = 3;
+        constexpr auto kScanRetryDelay = std::chrono::milliseconds(250);
 
-        // ── 3. Match config IDs to scanned IDs ──────────────────────────
+        auto fmtSet = [](const std::set<uint8_t> & s) {
+            std::string r = "{";
+            for (auto it = s.begin(); it != s.end(); ++it) {
+                if (it != s.begin()) r += ", ";
+                r += std::to_string(static_cast<int>(*it));
+            }
+            return r + "}";
+        };
+
         std::set<uint8_t> config_ids;
         for (const auto & c : configs) config_ids.insert(c.motor_id);
 
+        MultiScanResult scan;
         std::set<uint8_t> scanned_ids;
-        const auto all_motors = scan.allMotors();
-        for (const auto & m : all_motors) scanned_ids.insert(m.id);
-
-        if (config_ids != scanned_ids)
+        for (int attempt = 1; attempt <= kMaxScanAttempts; ++attempt)
         {
-            auto fmtSet = [](const std::set<uint8_t> & s) {
-                std::string r = "{";
-                for (auto it = s.begin(); it != s.end(); ++it) {
-                    if (it != s.begin()) r += ", ";
-                    r += std::to_string(static_cast<int>(*it));
-                }
-                return r + "}";
-            };
-            throw std::runtime_error(
-                "GoM80106SetController: Motor ID mismatch.\n"
-                "  Expected (configs): " + fmtSet(config_ids) + "\n"
-                "  Found (scan):       " + fmtSet(scanned_ids));
+            scan = scanAllPorts(pidvid);
+            if (scan.ports.empty())
+            {
+                throw std::runtime_error(
+                    "GoM80106SetController: No serial ports found for PID:VID '" +
+                    pidvid + "'");
+            }
+
+            scanned_ids.clear();
+            for (const auto & m : scan.allMotors()) scanned_ids.insert(m.id);
+
+            if (config_ids == scanned_ids) break;
+
+            if (attempt == kMaxScanAttempts)
+            {
+                throw std::runtime_error(
+                    "GoM80106SetController: Motor ID mismatch.\n"
+                    "  Expected (configs): " + fmtSet(config_ids) + "\n"
+                    "  Found (scan):       " + fmtSet(scanned_ids));
+            }
+
+            std::fprintf(stderr,
+                "[GoM80106SetController] WARNING: scan attempt %d/%d ID mismatch "
+                "(expected %s, found %s) - retrying...\n",
+                attempt, kMaxScanAttempts, fmtSet(config_ids).c_str(),
+                fmtSet(scanned_ids).c_str());
+            std::this_thread::sleep_for(kScanRetryDelay);
         }
+
+        const auto all_motors = scan.allMotors();
 
         // ── 4. Build port→motor mapping ──────────────────────────────────
         // Map from motor_id → port_path
