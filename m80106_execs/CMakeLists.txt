@@ -91,6 +91,22 @@ ament_target_dependencies(interface_testing
 
 target_compile_features(interface_testing PRIVATE cxx_std_17)
 
+# ─── motion_data_collection ──────────────────────────────────────────────────
+add_executable(motion_data_collection
+    src/motion_data_collection_node.cpp
+)
+
+target_link_libraries(motion_data_collection
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(motion_data_collection
+    rclcpp
+    serial
+)
+
+target_compile_features(motion_data_collection PRIVATE cxx_std_17)
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS
     actuator_ping
@@ -98,6 +114,7 @@ install(TARGETS
     motor_operation
     dual_motor_operation
     interface_testing
+    motion_data_collection
     DESTINATION lib/${PROJECT_NAME}
 )
 
