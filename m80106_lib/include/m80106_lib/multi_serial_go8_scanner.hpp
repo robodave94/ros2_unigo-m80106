@@ -156,4 +156,22 @@ scanAllPorts(const std::string & pidvid)
     return result;
 }
 
+/**
+ * @brief Scan a single explicit device path, bypassing PID:VID discovery.
+ *
+ * Use this when the RS-485 adapter is at a fixed, known path (e.g. an
+ * embedded board hardwired to /dev/ttyACM0) instead of being matched by
+ * USB PID:VID.  Returns a MultiScanResult with exactly one port entry.
+ *
+ * @param port  Device path, e.g. "/dev/ttyACM0".
+ * @return      MultiScanResult wrapping the single-port scan.
+ */
+inline MultiScanResult
+scanExplicitPort(const std::string & port)
+{
+    MultiScanResult result;
+    result.ports.push_back(scanPort(port));
+    return result;
+}
+
 }  // namespace m80106

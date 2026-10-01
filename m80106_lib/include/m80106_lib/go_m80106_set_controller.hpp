@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -94,7 +95,7 @@ class GoM80106SetController
 {
 public:
     /**
-     * @brief Construct the controller.
+     * @brief Construct the controller using USB PID:VID discovery.
      *
      * @param pidvid   USB PID:VID string for the RS-485 adapter(s).
      * @param configs  One GoMotorConfig per motor.  Motor IDs must be
@@ -109,100 +110,36 @@ public:
     GoM80106SetController(const std::string & pidvid,
                           const std::vector<GoMotorConfig> & configs)
     {
-        // ── 1. Validate configs ──────────────────────────────────────────
-        validateConfigs(configs);
+        initialise(
+            configs,
+            [pidvid]() { return scanAllPorts(pidvid); },
+            "PID:VID '" + pidvid + "'");
+    }
 
-        // ── 2/3. Scan ports and match config IDs to scanned IDs, retrying
-        //        a few times first — a fresh RS-485 bus occasionally
-        //        misreads IDs on the very first pass. ────────────────────
-        constexpr int kMaxScanAttempts = 3;
-        constexpr auto kScanRetryDelay = std::chrono::milliseconds(250);
-
-        auto fmtSet = [](const std::set<uint8_t> & s) {
-            std::string r = "{";
-            for (auto it = s.begin(); it != s.end(); ++it) {
-                if (it != s.begin()) r += ", ";
-                r += std::to_string(static_cast<int>(*it));
-            }
-            return r + "}";
-        };
-
-        std::set<uint8_t> config_ids;
-        for (const auto & c : configs) config_ids.insert(c.motor_id);
-
-        MultiScanResult scan;
-        std::set<uint8_t> scanned_ids;
-        for (int attempt = 1; attempt <= kMaxScanAttempts; ++attempt)
-        {
-            scan = scanAllPorts(pidvid);
-            if (scan.ports.empty())
-            {
-                throw std::runtime_error(
-                    "GoM80106SetController: No serial ports found for PID:VID '" +
-                    pidvid + "'");
-            }
-
-            scanned_ids.clear();
-            for (const auto & m : scan.allMotors()) scanned_ids.insert(m.id);
-
-            if (config_ids == scanned_ids) break;
-
-            if (attempt == kMaxScanAttempts)
-            {
-                throw std::runtime_error(
-                    "GoM80106SetController: Motor ID mismatch.\n"
-                    "  Expected (configs): " + fmtSet(config_ids) + "\n"
-                    "  Found (scan):       " + fmtSet(scanned_ids));
-            }
-
-            std::fprintf(stderr,
-                "[GoM80106SetController] WARNING: scan attempt %d/%d ID mismatch "
-                "(expected %s, found %s) - retrying...\n",
-                attempt, kMaxScanAttempts, fmtSet(config_ids).c_str(),
-                fmtSet(scanned_ids).c_str());
-            std::this_thread::sleep_for(kScanRetryDelay);
-        }
-
-        const auto all_motors = scan.allMotors();
-
-        // ── 4. Build port→motor mapping ──────────────────────────────────
-        // Map from motor_id → port_path
-        std::map<uint8_t, std::string> id_to_port;
-        for (const auto & m : all_motors) id_to_port[m.id] = m.port;
-
-        // ── 5. Create MotorDrivers (one per unique port) ────────────────
-        std::set<std::string> unique_ports;
-        for (const auto & kv : id_to_port) unique_ports.insert(kv.second);
-
-        for (const auto & port : unique_ports)
-        {
-            drivers_[port] = std::make_unique<MotorDriver>(port);
-        }
-
-        // ── 6. Initialise per-motor state ────────────────────────────────
-        for (const auto & cfg : configs)
-        {
-            auto state = detail::MotorState(cfg);
-            state.port_path = id_to_port[cfg.motor_id];
-
-            // Read initial position via a brake command
-            MotorData fb{};
-            auto * drv = drivers_[state.port_path].get();
-            if (drv->brake(cfg.motor_id, fb) && fb.correct)
-            {
-                float motor_output_pos = toOutputPos(fb.Pos);
-                state.profile_position_rad = motor_output_pos;
-                state.target_position_rad  = motor_output_pos;
-                state.last_feedback        = fb;
-                state.feedback_valid       = true;
-            }
-
-            motors_.emplace(cfg.motor_id, std::move(state));
-        }
-
-        // ── 7. Start control thread ─────────────────────────────────────
-        running_.store(true);
-        control_thread_ = std::thread(&GoM80106SetController::controlLoop, this);
+    /**
+     * @brief Construct the controller from an explicit device path.
+     *
+     * Bypasses PID:VID discovery and opens @p device_path directly — use on
+     * embedded hardware wired to a fixed port (e.g. /dev/ttyACM0).  The third
+     * bool parameter disambiguates this overload from the PID:VID one.
+     *
+     * @param device_path   RS-485 device path, e.g. "/dev/ttyACM0".
+     * @param configs       One GoMotorConfig per motor (see PID:VID ctor).
+     * @param explicit_path Disambiguation tag — pass `true`.
+     *
+     * @throws std::invalid_argument  Invalid motor ID, duplicate ID, or bad
+     *                                 gearbox configuration.
+     * @throws std::runtime_error      Scanned motor IDs do not match configs,
+     *                                 or the port could not be opened.
+     */
+    GoM80106SetController(const std::string & device_path,
+                          const std::vector<GoMotorConfig> & configs,
+                          bool /*explicit_path*/)
+    {
+        initialise(
+            configs,
+            [device_path]() { return scanExplicitPort(device_path); },
+            "device path '" + device_path + "'");
     }
 
     ~GoM80106SetController()
@@ -613,6 +550,113 @@ private:
 
     std::map<uint8_t, detail::MotorState> motors_;
     std::map<std::string, std::unique_ptr<MotorDriver>> drivers_;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Shared construction (called from both constructors)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// @param scan_fn      Returns a fresh MultiScanResult each call (PID:VID
+    ///                     discovery or a single explicit port).
+    /// @param source_desc  Human-readable bus source for error messages.
+    void initialise(const std::vector<GoMotorConfig> & configs,
+                    const std::function<MultiScanResult()> & scan_fn,
+                    const std::string & source_desc)
+    {
+        // ── 1. Validate configs ──────────────────────────────────────────
+        validateConfigs(configs);
+
+        // ── 2/3. Scan ports and match config IDs to scanned IDs, retrying
+        //        a few times first — a fresh RS-485 bus occasionally
+        //        misreads IDs on the very first pass. ────────────────────
+        constexpr int kMaxScanAttempts = 3;
+        constexpr auto kScanRetryDelay = std::chrono::milliseconds(250);
+
+        auto fmtSet = [](const std::set<uint8_t> & s) {
+            std::string r = "{";
+            for (auto it = s.begin(); it != s.end(); ++it) {
+                if (it != s.begin()) r += ", ";
+                r += std::to_string(static_cast<int>(*it));
+            }
+            return r + "}";
+        };
+
+        std::set<uint8_t> config_ids;
+        for (const auto & c : configs) config_ids.insert(c.motor_id);
+
+        MultiScanResult scan;
+        std::set<uint8_t> scanned_ids;
+        for (int attempt = 1; attempt <= kMaxScanAttempts; ++attempt)
+        {
+            scan = scan_fn();
+            if (scan.ports.empty())
+            {
+                throw std::runtime_error(
+                    "GoM80106SetController: No serial ports found for " +
+                    source_desc);
+            }
+
+            scanned_ids.clear();
+            for (const auto & m : scan.allMotors()) scanned_ids.insert(m.id);
+
+            if (config_ids == scanned_ids) break;
+
+            if (attempt == kMaxScanAttempts)
+            {
+                throw std::runtime_error(
+                    "GoM80106SetController: Motor ID mismatch.\n"
+                    "  Expected (configs): " + fmtSet(config_ids) + "\n"
+                    "  Found (scan):       " + fmtSet(scanned_ids));
+            }
+
+            std::fprintf(stderr,
+                "[GoM80106SetController] WARNING: scan attempt %d/%d ID mismatch "
+                "(expected %s, found %s) - retrying...\n",
+                attempt, kMaxScanAttempts, fmtSet(config_ids).c_str(),
+                fmtSet(scanned_ids).c_str());
+            std::this_thread::sleep_for(kScanRetryDelay);
+        }
+
+        const auto all_motors = scan.allMotors();
+
+        // ── 4. Build port→motor mapping ──────────────────────────────────
+        // Map from motor_id → port_path
+        std::map<uint8_t, std::string> id_to_port;
+        for (const auto & m : all_motors) id_to_port[m.id] = m.port;
+
+        // ── 5. Create MotorDrivers (one per unique port) ────────────────
+        std::set<std::string> unique_ports;
+        for (const auto & kv : id_to_port) unique_ports.insert(kv.second);
+
+        for (const auto & port : unique_ports)
+        {
+            drivers_[port] = std::make_unique<MotorDriver>(port);
+        }
+
+        // ── 6. Initialise per-motor state ────────────────────────────────
+        for (const auto & cfg : configs)
+        {
+            auto state = detail::MotorState(cfg);
+            state.port_path = id_to_port[cfg.motor_id];
+
+            // Read initial position via a brake command
+            MotorData fb{};
+            auto * drv = drivers_[state.port_path].get();
+            if (drv->brake(cfg.motor_id, fb) && fb.correct)
+            {
+                float motor_output_pos = toOutputPos(fb.Pos);
+                state.profile_position_rad = motor_output_pos;
+                state.target_position_rad  = motor_output_pos;
+                state.last_feedback        = fb;
+                state.feedback_valid       = true;
+            }
+
+            motors_.emplace(cfg.motor_id, std::move(state));
+        }
+
+        // ── 7. Start control thread ─────────────────────────────────────
+        running_.store(true);
+        control_thread_ = std::thread(&GoM80106SetController::controlLoop, this);
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // Validation (called from constructor)
