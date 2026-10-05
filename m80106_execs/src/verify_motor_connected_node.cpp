@@ -43,125 +43,139 @@
 
 #include "m80106_lib/motor_driver.hpp"
 
-namespace m80106_execs {
-
-class VerifyMotorConnectedNode : public rclcpp::Node
+namespace m80106_execs
 {
-public:
-    explicit VerifyMotorConnectedNode(const rclcpp::NodeOptions & opts = rclcpp::NodeOptions())
-    : rclcpp::Node("verify_motor_connected", opts)
+
+    class VerifyMotorConnectedNode : public rclcpp::Node
     {
-        pidvid_      = declare_parameter<std::string>("pidvid", "1a86:55d3");
-        serial_port_ = declare_parameter<std::string>("serial_port", "/dev/ttyACM0");
-        motor_id_    = static_cast<uint8_t>(declare_parameter<int>("motor_id", 2));
-        rate_hz_     = declare_parameter<double>("rate_hz", 1.0);
-        timeout_s_   = declare_parameter<double>("timeout_s", 0.0);
+    public:
+        explicit VerifyMotorConnectedNode(const rclcpp::NodeOptions &opts = rclcpp::NodeOptions())
+            : rclcpp::Node("verify_motor_connected", opts)
+        {
+            pidvid_ = declare_parameter<std::string>("pidvid", "1a86:55d3");
+            serial_port_ = declare_parameter<std::string>("serial_port", "/dev/ttyACM0");
+            motor_id_ = static_cast<uint8_t>(declare_parameter<int>("motor_id", 2));
+            rate_hz_ = declare_parameter<double>("rate_hz", 1.0);
+            timeout_s_ = declare_parameter<double>("timeout_s", 0.0);
 
-        rate_hz_ = std::max(0.1, rate_hz_);
+            rate_hz_ = std::max(0.1, rate_hz_);
 
-        error_pub_ = create_publisher<std_msgs::msg::String>("/swlq_motor_errors", rclcpp::QoS(10));
+            error_pub_ = create_publisher<std_msgs::msg::String>("/swlq_motor_errors", rclcpp::QoS(10));
 
-        start_time_ = now();
-        timer_ = create_wall_timer(
-            std::chrono::duration<double>(1.0 / rate_hz_),
-            std::bind(&VerifyMotorConnectedNode::onTimer, this));
+            start_time_ = now();
+            timer_ = create_wall_timer(
+                std::chrono::duration<double>(1.0 / rate_hz_),
+                std::bind(&VerifyMotorConnectedNode::onTimer, this));
 
-        RCLCPP_INFO(get_logger(),
-            "verify_motor_connected: checking pidvid=%s serial_port=%s motor_id=%d",
-            pidvid_.c_str(), serial_port_.c_str(), static_cast<int>(motor_id_));
-    }
-
-private:
-    // Checks are evaluated in order; the first failure is reported so the
-    // operator always sees the earliest unmet precondition.
-    bool checkPidVidPresent(std::string & matched_port) const
-    {
-        for (const auto & info : serial::list_ports()) {
-            if (info.hardware_id.find(pidvid_) != std::string::npos) {
-                matched_port = info.port;
-                return true;
-            }
+            RCLCPP_INFO(get_logger(),
+                        "verify_motor_connected: checking pidvid=%s serial_port=%s motor_id=%d",
+                        pidvid_.c_str(), serial_port_.c_str(), static_cast<int>(motor_id_));
         }
-        return false;
-    }
 
-    bool checkPortPaired(const std::string & matched_port) const
-    {
-        struct stat st{};
-        if (stat(serial_port_.c_str(), &st) != 0) return false;
-        // Pairing: the port that matched pidvid must BE serial_port, not just
-        // some other device that happens to also match the PID:VID.
-        return matched_port == serial_port_;
-    }
-
-    bool checkMotorResponds() const
-    {
-        try {
-            m80106::MotorDriver driver(serial_port_);
-            MotorData data;
-            return driver.brake(motor_id_, data) && data.correct;
-        } catch (const std::exception &) {
+    private:
+        // Checks are evaluated in order; the first failure is reported so the
+        // operator always sees the earliest unmet precondition.
+        bool checkPidVidPresent(std::string &matched_port) const
+        {
+            for (const auto &info : serial::list_ports())
+            {
+                if (info.hardware_id.find(pidvid_) != std::string::npos)
+                {
+                    matched_port = info.port;
+                    return true;
+                }
+            }
             return false;
         }
-    }
 
-    void onTimer()
-    {
-        std::string matched_port;
-        const bool pidvid_ok = checkPidVidPresent(matched_port);
-        const bool paired_ok = pidvid_ok && checkPortPaired(matched_port);
-        const bool motor_ok  = paired_ok && checkMotorResponds();
-
-        if (pidvid_ok && paired_ok && motor_ok) {
-            RCLCPP_INFO(get_logger(),
-                "verify_motor_connected: all checks passed (port=%s, motor %d responded). Exiting 0.",
-                serial_port_.c_str(), static_cast<int>(motor_id_));
-            rclcpp::shutdown();
-            return;
+        bool checkPortPaired(const std::string &matched_port) const
+        {
+            struct stat st{};
+            if (stat(serial_port_.c_str(), &st) != 0)
+                return false;
+            // Pairing: the port that matched pidvid must BE serial_port, not just
+            // some other device that happens to also match the PID:VID.
+            return matched_port == serial_port_;
         }
 
-        std::string reason;
-        if (!pidvid_ok) {
-            reason = "required usb device not connected on pi (pidvid " + pidvid_ + " not found)";
-        } else if (!paired_ok) {
-            reason = "required usb device not connected on pi (" + serial_port_ +
-                      " missing or not paired with pidvid " + pidvid_ + ")";
-        } else {
-            reason = "required usb device not connected on pi (motor id " +
-                      std::to_string(static_cast<int>(motor_id_)) + " not responding on " +
-                      serial_port_ + ")";
+        bool checkMotorResponds() const
+        {
+            try
+            {
+                m80106::MotorDriver driver(serial_port_);
+                MotorData data;
+                return driver.brake(motor_id_, data) && data.correct;
+            }
+            catch (const std::exception &)
+            {
+                return false;
+            }
         }
 
-        std_msgs::msg::String msg;
-        msg.data = reason;
-        error_pub_->publish(msg);
-        RCLCPP_WARN(get_logger(), "%s", reason.c_str());
+        void onTimer()
+        {
+            std::string matched_port;
+            const bool pidvid_ok = checkPidVidPresent(matched_port);
+            const bool paired_ok = pidvid_ok && checkPortPaired(matched_port);
+            const bool motor_ok = paired_ok && checkMotorResponds();
 
-        if (timeout_s_ > 0.0 && (now() - start_time_).seconds() > timeout_s_) {
-            RCLCPP_ERROR(get_logger(), "verify_motor_connected: timed out after %.1fs. Exiting 1.", timeout_s_);
-            exit_code_ = 1;
-            rclcpp::shutdown();
+            if (pidvid_ok && paired_ok && motor_ok)
+            {
+                RCLCPP_INFO(get_logger(),
+                            "verify_motor_connected: all checks passed (port=%s, motor %d responded). Exiting 0.",
+                            serial_port_.c_str(), static_cast<int>(motor_id_));
+                rclcpp::shutdown();
+                return;
+            }
+
+            std::string reason;
+            if (!pidvid_ok)
+            {
+                reason = "required usb device not connected on pi (pidvid " + pidvid_ + " not found)";
+            }
+            else if (!paired_ok)
+            {
+                reason = "required usb device not connected on pi (" + serial_port_ +
+                         " missing or not paired with pidvid " + pidvid_ + ")";
+            }
+            else
+            {
+                reason = "required usb device not connected on pi (motor id " +
+                         std::to_string(static_cast<int>(motor_id_)) + " not responding on " +
+                         serial_port_ + ")";
+            }
+
+            std_msgs::msg::String msg;
+            msg.data = reason;
+            error_pub_->publish(msg);
+            RCLCPP_WARN(get_logger(), "%s", reason.c_str());
+
+            if (timeout_s_ > 0.0 && (now() - start_time_).seconds() > timeout_s_)
+            {
+                RCLCPP_ERROR(get_logger(), "verify_motor_connected: timed out after %.1fs. Exiting 1.", timeout_s_);
+                exit_code_ = 1;
+                rclcpp::shutdown();
+            }
         }
-    }
 
-public:
-    int exitCode() const noexcept { return exit_code_; }
+    public:
+        int exitCode() const noexcept { return exit_code_; }
 
-private:
-    std::string pidvid_;
-    std::string serial_port_;
-    uint8_t motor_id_ = 2;
-    double rate_hz_ = 1.0;
-    double timeout_s_ = 0.0;
-    rclcpp::Time start_time_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr error_pub_;
-    int exit_code_ = 0;
-};
+    private:
+        std::string pidvid_;
+        std::string serial_port_;
+        uint8_t motor_id_ = 2;
+        double rate_hz_ = 1.0;
+        double timeout_s_ = 0.0;
+        rclcpp::Time start_time_;
+        rclcpp::TimerBase::SharedPtr timer_;
+        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr error_pub_;
+        int exit_code_ = 0;
+    };
 
-}  // namespace m80106_execs
+} // namespace m80106_execs
 
-int main(int argc, char * argv[])
+int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<m80106_execs::VerifyMotorConnectedNode>();
