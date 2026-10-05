@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp      REQUIRED)
 find_package(m80106_lib  REQUIRED)
 find_package(serial      REQUIRED)
+find_package(std_msgs    REQUIRED)
 
 # ─── actuator_ping ───────────────────────────────────────────────────────────
 add_executable(actuator_ping
@@ -42,6 +43,23 @@ ament_target_dependencies(scan_motor_info
 )
 
 target_compile_features(scan_motor_info PRIVATE cxx_std_17)
+
+# ─── verify_motor_connected ──────────────────────────────────────────────────
+add_executable(verify_motor_connected
+    src/verify_motor_connected_node.cpp
+)
+
+target_link_libraries(verify_motor_connected
+    m80106_lib::m80106_lib
+)
+
+ament_target_dependencies(verify_motor_connected
+    rclcpp
+    serial
+    std_msgs
+)
+
+target_compile_features(verify_motor_connected PRIVATE cxx_std_17)
 
 # ─── motor_operation ─────────────────────────────────────────────────────────
 add_executable(motor_operation
@@ -111,6 +129,7 @@ target_compile_features(motion_data_collection PRIVATE cxx_std_17)
 install(TARGETS
     actuator_ping
     scan_motor_info
+    verify_motor_connected
     motor_operation
     dual_motor_operation
     interface_testing

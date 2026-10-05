@@ -10,6 +10,9 @@
     Provides the following executables:
       actuator_ping      — one-shot CLI: discover and ping all actuators.
       scan_motor_info    — live htop-style terminal monitor for motor telemetry.
+      verify_motor_connected — one-shot gate: confirm the RS-485 adapter,
+                           its fixed device path and a motor id are all
+                           present; publishes /swlq_motor_errors until they are.
       motor_operation    — preprogrammed motion-verification routine.
       dual_motor_operation — motion-verification routine for two motors at once.
   </description>
@@ -22,6 +25,7 @@
   <depend>rclcpp</depend>
   <depend>m80106_lib</depend>
   <depend>serial</depend>
+  <depend>std_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
