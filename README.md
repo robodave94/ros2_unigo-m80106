@@ -25,6 +25,7 @@ discovery, configuration, live telemetry monitoring, and motion verification.
 | `serial` (ROS 2) | Use the [robodave94/serial-ros2](https://github.com/robodave94/serial-ros2) fork. Clone into your workspace `src/`. |
 | gcc ≥ 9 | Standard on Ubuntu 24.04 (Jazzy default). |
 | USB RS-485 adapter | Default PID:VID `0403:6011` (FT4232H). Configurable via ROS parameter. |
+| USB Permission Settings | A serial/USB hardware device is needed with appropriate permissions on your host system, if the code isn't detecting the motors makes sure you have enabled the correct permissions on the `ttyUSB` device via a command such as `sudo chmod 777 /dev/ttyUSB0` on the device path of your interfacing hardware. |
 
 ---
 
